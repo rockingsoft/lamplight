@@ -1,4 +1,4 @@
-module tracetest
+module lamplight
 
 go 1.23
 

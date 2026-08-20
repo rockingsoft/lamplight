@@ -6,7 +6,7 @@ import (
 	"strings"
 
 	"github.com/hashicorp/hcl/v2"
-	"tracetest/internal/model"
+	"lamplight/internal/model"
 )
 
 const (

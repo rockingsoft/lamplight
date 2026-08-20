@@ -8,7 +8,7 @@ import (
 	"github.com/hashicorp/hcl/v2"
 	"github.com/hashicorp/hcl/v2/hclsyntax"
 	"github.com/zclconf/go-cty/cty"
-	"tracetest/internal/model"
+	"lamplight/internal/model"
 )
 
 func TestResolvePrecedenceAndSelectedClosure(t *testing.T) {
@@ -20,7 +20,7 @@ func TestResolvePrecedenceAndSelectedClosure(t *testing.T) {
 		"PORT":  {Name: "PORT", Type: "int", Default: cty.NumberIntVal(80), HasDefault: true},
 		"OTHER": {Name: "OTHER", Type: "string"},
 	}
-	values, diagnostics := Resolve(definitions, Input{Vars: map[string]string{"PORT": "8080"}, Environment: map[string]string{"TRACETEST_VAR_PORT": "9090"}}, expression)
+	values, diagnostics := Resolve(definitions, Input{Vars: map[string]string{"PORT": "8080"}, Environment: map[string]string{"LAMPLIGHT_VAR_PORT": "9090"}}, expression)
 	if len(diagnostics) != 0 {
 		t.Fatalf("Resolve diagnostics: %#v", diagnostics)
 	}
@@ -44,11 +44,11 @@ func TestResolveSourcesErrorsAndDefaults(t *testing.T) {
 		"COUNT":   {Name: "COUNT", Type: "int", Default: cty.NumberIntVal(2), HasDefault: true},
 		"WAIT":    {Name: "WAIT", Type: "duration", Default: cty.NumberIntVal(int64(time.Second)), HasDefault: true},
 	}
-	values, diagnostics := Resolve(definitions, Input{Vars: map[string]string{"NAME": "from-cli", "UNDEFINED": "x"}, Environment: map[string]string{"TRACETEST_VAR_MISSING": "bad"}}, expression)
+	values, diagnostics := Resolve(definitions, Input{Vars: map[string]string{"NAME": "from-cli", "UNDEFINED": "x"}, Environment: map[string]string{"LAMPLIGHT_VAR_MISSING": "bad"}}, expression)
 	if len(values) != 1 || values["NAME"].Value.AsString() != "from-cli" || !values["NAME"].Sensitive || len(diagnostics) != 3 {
 		t.Fatalf("Resolve() values=%#v diagnostics=%#v", values, diagnostics)
 	}
-	all, diagnostics := Resolve(definitions, Input{Environment: map[string]string{"TRACETEST_VAR_NAME": "from-env", "TRACETEST_VAR_MISSING": "4"}})
+	all, diagnostics := Resolve(definitions, Input{Environment: map[string]string{"LAMPLIGHT_VAR_NAME": "from-env", "LAMPLIGHT_VAR_MISSING": "4"}})
 	if len(diagnostics) != 0 || all["NAME"].Value.AsString() != "from-env" || all["MISSING"].Value.AsBigFloat().Cmp(big.NewFloat(4)) != 0 || all["COUNT"].Value.AsBigFloat().Cmp(big.NewFloat(2)) != 0 || all["WAIT"].Value.AsBigFloat().Cmp(big.NewFloat(float64(time.Second))) != 0 {
 		t.Fatalf("Resolve(all) values=%#v diagnostics=%#v", all, diagnostics)
 	}

@@ -7,7 +7,7 @@ import (
 	"strings"
 	"testing"
 
-	"tracetest/internal/model"
+	"lamplight/internal/model"
 )
 
 type roundTrip func(*http.Request) (*http.Response, error)

@@ -6,7 +6,7 @@ import (
 	"os/signal"
 	"syscall"
 
-	"tracetest/internal/cli"
+	"lamplight/internal/cli"
 )
 
 func main() {

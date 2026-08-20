@@ -6,8 +6,8 @@ import (
 	"testing"
 	"time"
 
-	"tracetest/internal/datasource"
-	"tracetest/internal/model"
+	"lamplight/internal/datasource"
+	"lamplight/internal/model"
 )
 
 type fakeClock struct{ now time.Time }

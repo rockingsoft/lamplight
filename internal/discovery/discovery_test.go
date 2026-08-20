@@ -10,7 +10,7 @@ import (
 
 func TestDiscoverSortedAndConfigExcluded(t *testing.T) {
 	dir := t.TempDir()
-	for _, name := range []string{"z.hcl", "a.hcl", ".tracetest.hcl", "ignored.txt", "nested/b.hcl"} {
+	for _, name := range []string{"z.wick", "a.wick", ".lamplight", "ignored.txt", "nested/b.wick", "legacy.hcl"} {
 		path := filepath.Join(dir, name)
 		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 			t.Fatal(err)
@@ -23,7 +23,7 @@ func TestDiscoverSortedAndConfigExcluded(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := []string{filepath.Join(dir, "a.hcl"), filepath.Join(dir, "nested", "b.hcl"), filepath.Join(dir, "z.hcl")}
+	want := []string{filepath.Join(dir, "a.wick"), filepath.Join(dir, "nested", "b.wick"), filepath.Join(dir, "z.wick")}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("Discover() = %#v, want %#v", got, want)
 	}
@@ -31,29 +31,29 @@ func TestDiscoverSortedAndConfigExcluded(t *testing.T) {
 
 func TestDiscoverIgnoresSymlinksAndNonRegularFiles(t *testing.T) {
 	dir := t.TempDir()
-	if err := os.WriteFile(filepath.Join(dir, "real.hcl"), nil, 0o600); err != nil {
+	if err := os.WriteFile(filepath.Join(dir, "real.wick"), nil, 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.Symlink(filepath.Join(dir, "real.hcl"), filepath.Join(dir, "linked.hcl")); err != nil {
+	if err := os.Symlink(filepath.Join(dir, "real.wick"), filepath.Join(dir, "linked.wick")); err != nil {
 		t.Fatal(err)
 	}
 	if err := os.Mkdir(filepath.Join(dir, "linked-dir"), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(dir, "linked-dir", "hidden.hcl"), nil, 0o600); err != nil {
+	if err := os.WriteFile(filepath.Join(dir, "linked-dir", "hidden.wick"), nil, 0o600); err != nil {
 		t.Fatal(err)
 	}
 	if err := os.Symlink(filepath.Join(dir, "linked-dir"), filepath.Join(dir, "symlink-dir")); err != nil {
 		t.Fatal(err)
 	}
-	if err := syscall.Mkfifo(filepath.Join(dir, "ignored.hcl"), 0o600); err != nil {
+	if err := syscall.Mkfifo(filepath.Join(dir, "ignored.wick"), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	got, err := Discover(dir)
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := []string{filepath.Join(dir, "linked-dir", "hidden.hcl"), filepath.Join(dir, "real.hcl")}
+	want := []string{filepath.Join(dir, "linked-dir", "hidden.wick"), filepath.Join(dir, "real.wick")}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("Discover() = %#v, want %#v", got, want)
 	}
@@ -71,7 +71,7 @@ func TestDiscoverPropagatesPermissionWalkError(t *testing.T) {
 	if err := os.Mkdir(blocked, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(blocked, "test.hcl"), nil, 0o600); err != nil {
+	if err := os.WriteFile(filepath.Join(blocked, "test.wick"), nil, 0o600); err != nil {
 		t.Fatal(err)
 	}
 	if err := os.Chmod(blocked, 0); err != nil {

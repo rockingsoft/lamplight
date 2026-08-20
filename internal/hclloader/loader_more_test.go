@@ -8,8 +8,8 @@ import (
 	"github.com/hashicorp/hcl/v2"
 	"github.com/hashicorp/hcl/v2/hclparse"
 	"github.com/zclconf/go-cty/cty"
-	"tracetest/internal/diagnostic"
-	"tracetest/internal/model"
+	"lamplight/internal/diagnostic"
+	"lamplight/internal/model"
 )
 
 func loaderExpression(t *testing.T, source string) hcl.Expression {

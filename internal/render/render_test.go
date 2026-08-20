@@ -6,8 +6,8 @@ import (
 	"testing"
 	"time"
 
-	"tracetest/internal/model"
-	"tracetest/internal/result"
+	"lamplight/internal/model"
+	"lamplight/internal/result"
 )
 
 func TestRenderersConsumeSameRedactedResult(t *testing.T) {

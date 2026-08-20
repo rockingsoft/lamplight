@@ -4,7 +4,7 @@ import (
 	"fmt"
 	"sort"
 
-	"tracetest/internal/model"
+	"lamplight/internal/model"
 )
 
 type Selector struct {

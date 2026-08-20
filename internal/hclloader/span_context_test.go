@@ -5,7 +5,7 @@ import (
 	"path/filepath"
 	"testing"
 
-	"tracetest/internal/config"
+	"lamplight/internal/config"
 )
 
 func TestSpanExpressionUsesSpanContext(t *testing.T) {
@@ -16,7 +16,7 @@ func TestSpanExpressionUsesSpanContext(t *testing.T) {
 	}
 	root := "project { base_dir = \"tests\" }\n" +
 		"datasource \"tempo\" { endpoint = \"http://tempo:3200\" }\n"
-	if err := os.WriteFile(filepath.Join(dir, ".tracetest.hcl"), []byte(root), 0o600); err != nil {
+	if err := os.WriteFile(filepath.Join(dir, ".lamplight"), []byte(root), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	definition := `test "trace" {
@@ -33,7 +33,7 @@ func TestSpanExpressionUsesSpanContext(t *testing.T) {
     }
   }
 }`
-	if err := os.WriteFile(filepath.Join(base, "trace.hcl"), []byte(definition), 0o600); err != nil {
+	if err := os.WriteFile(filepath.Join(base, "trace.wick"), []byte(definition), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	_, diagnostics := (Loader{}).LoadProject(config.Options{WorkingDir: dir})

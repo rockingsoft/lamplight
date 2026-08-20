@@ -9,7 +9,7 @@ import (
 	"net/http"
 	"strings"
 
-	"tracetest/internal/model"
+	"lamplight/internal/model"
 )
 
 const (

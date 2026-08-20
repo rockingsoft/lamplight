@@ -10,7 +10,7 @@ import (
 	"net/http/httptest"
 	"testing"
 
-	"tracetest/internal/model"
+	"lamplight/internal/model"
 )
 
 const traceID = "0123456789abcdef0123456789abcdef"

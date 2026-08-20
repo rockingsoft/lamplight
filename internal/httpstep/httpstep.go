@@ -15,8 +15,8 @@ import (
 	"strings"
 	"unicode/utf8"
 
-	"tracetest/internal/model"
-	"tracetest/internal/tracecontext"
+	"lamplight/internal/model"
+	"lamplight/internal/tracecontext"
 )
 
 // Executor is an HTTP executor whose optional Transport makes unit tests and

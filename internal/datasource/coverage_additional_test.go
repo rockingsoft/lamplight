@@ -5,7 +5,7 @@ import (
 	"errors"
 	"testing"
 
-	"tracetest/internal/model"
+	"lamplight/internal/model"
 )
 
 func TestFakeConnectionAndObservationEdgeCases(t *testing.T) {

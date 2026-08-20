@@ -8,7 +8,7 @@ import (
 	"strings"
 	"testing"
 
-	"tracetest/internal/model"
+	"lamplight/internal/model"
 )
 
 type failingReader struct{}

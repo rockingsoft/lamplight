@@ -5,7 +5,7 @@ import (
 	"strings"
 	"testing"
 
-	"tracetest/internal/model"
+	"lamplight/internal/model"
 )
 
 func TestInjectNilAndTraceStateBranches(t *testing.T) {

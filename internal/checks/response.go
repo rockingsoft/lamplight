@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"sort"
 
-	"tracetest/internal/model"
+	"lamplight/internal/model"
 )
 
 // ResponseAssertion evaluates one named condition against a normalized HTTP

@@ -4,7 +4,7 @@ import (
 	"testing"
 
 	"github.com/hashicorp/hcl/v2"
-	"tracetest/internal/model"
+	"lamplight/internal/model"
 )
 
 func TestRedact(t *testing.T) {

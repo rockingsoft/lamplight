@@ -6,7 +6,7 @@ import (
 	"strings"
 	"testing"
 
-	"tracetest/internal/model"
+	"lamplight/internal/model"
 )
 
 func TestAggregateRunAndAllAggregateStates(t *testing.T) {

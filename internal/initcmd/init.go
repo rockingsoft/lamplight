@@ -7,7 +7,7 @@ import (
 )
 
 const config = `project {
-  base_dir = "./tracetests"
+  base_dir = "./lamplight"
   output   = "pretty"
 }
 `
@@ -36,9 +36,9 @@ test "healthcheck" {
 `
 
 func Run(dir string) error {
-	configPath := filepath.Join(dir, ".tracetest.hcl")
-	baseDir := filepath.Join(dir, "tracetests")
-	testPath := filepath.Join(baseDir, "healthcheck.hcl")
+	configPath := filepath.Join(dir, ".lamplight")
+	baseDir := filepath.Join(dir, "lamplight")
+	testPath := filepath.Join(baseDir, "healthcheck.wick")
 	for _, path := range []string{configPath, testPath} {
 		if _, err := os.Stat(path); err == nil {
 			return fmt.Errorf("refusing to overwrite existing file %s", path)
@@ -55,6 +55,6 @@ func Run(dir string) error {
 	if err := os.WriteFile(testPath, []byte(test), 0o644); err != nil {
 		return err
 	}
-	fmt.Printf("Initialized Tracetest project. Run: tracetest run\n")
+	fmt.Printf("Initialized Lamplight project. Run: lamplight run\n")
 	return nil
 }

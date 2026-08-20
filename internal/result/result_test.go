@@ -6,7 +6,7 @@ import (
 	"testing"
 	"time"
 
-	"tracetest/internal/model"
+	"lamplight/internal/model"
 )
 
 func TestAggregateAndExitCode(t *testing.T) {

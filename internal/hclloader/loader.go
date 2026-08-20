@@ -12,11 +12,11 @@ import (
 	"github.com/hashicorp/hcl/v2/hclparse"
 	"github.com/hashicorp/hcl/v2/hclsyntax"
 	"github.com/zclconf/go-cty/cty"
-	"tracetest/internal/config"
-	"tracetest/internal/diagnostic"
-	"tracetest/internal/discovery"
-	"tracetest/internal/expr"
-	"tracetest/internal/model"
+	"lamplight/internal/config"
+	"lamplight/internal/diagnostic"
+	"lamplight/internal/discovery"
+	"lamplight/internal/expr"
+	"lamplight/internal/model"
 )
 
 type Loader struct{ Options config.Options }

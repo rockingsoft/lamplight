@@ -4,7 +4,7 @@ import (
 	"errors"
 	"testing"
 
-	"tracetest/internal/model"
+	"lamplight/internal/model"
 )
 
 func TestEvaluateResponsePreservesEveryFalseAssertion(t *testing.T) {

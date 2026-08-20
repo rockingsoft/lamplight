@@ -12,10 +12,10 @@ import (
 	"github.com/hashicorp/hcl/v2"
 	"github.com/zclconf/go-cty/cty"
 	ctyjson "github.com/zclconf/go-cty/cty/json"
-	"tracetest/internal/expr"
-	"tracetest/internal/model"
-	"tracetest/internal/poller"
-	"tracetest/internal/result"
+	"lamplight/internal/expr"
+	"lamplight/internal/model"
+	"lamplight/internal/poller"
+	"lamplight/internal/result"
 )
 
 type Engine struct {

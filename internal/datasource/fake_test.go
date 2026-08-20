@@ -4,7 +4,7 @@ import (
 	"context"
 	"testing"
 
-	"tracetest/internal/model"
+	"lamplight/internal/model"
 )
 
 func TestFakeRepeatsFinalScriptEntry(t *testing.T) {

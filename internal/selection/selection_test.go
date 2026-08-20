@@ -3,7 +3,7 @@ package selection
 import (
 	"testing"
 
-	"tracetest/internal/model"
+	"lamplight/internal/model"
 )
 
 func TestSelectOrdersAndFilters(t *testing.T) {

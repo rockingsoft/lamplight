@@ -10,9 +10,9 @@ import (
 
 	"github.com/hashicorp/hcl/v2"
 	"github.com/zclconf/go-cty/cty"
-	"tracetest/internal/diagnostic"
-	"tracetest/internal/expr"
-	"tracetest/internal/model"
+	"lamplight/internal/diagnostic"
+	"lamplight/internal/expr"
+	"lamplight/internal/model"
 )
 
 type Input struct {
@@ -41,7 +41,7 @@ func Resolve(definitions map[string]model.VariableDefinition, input Input, expre
 			continue
 		}
 		if definitions[name].Sensitive {
-			diags = append(diags, model.Diagnostic{Severity: diagnostic.SeverityWarning, Code: diagnostic.CodeSensitivity, Message: fmt.Sprintf("sensitive variable %q was supplied through --var", name), Suggestion: "prefer TRACETEST_VAR_" + name})
+			diags = append(diags, model.Diagnostic{Severity: diagnostic.SeverityWarning, Code: diagnostic.CodeSensitivity, Message: fmt.Sprintf("sensitive variable %q was supplied through --var", name), Suggestion: "prefer LAMPLIGHT_VAR_" + name})
 		}
 	}
 	for name := range required {
@@ -52,7 +52,7 @@ func Resolve(definitions map[string]model.VariableDefinition, input Input, expre
 		}
 		value, found, source := rawValue(name, input)
 		if !found && !definition.HasDefault {
-			diags = append(diags, diagnostic.Error(diagnostic.CodeVariable, fmt.Sprintf("required variable %q has no value", name), sourceRange(definition), "set --var "+name+"=… or TRACETEST_VAR_"+name))
+			diags = append(diags, diagnostic.Error(diagnostic.CodeVariable, fmt.Sprintf("required variable %q has no value", name), sourceRange(definition), "set --var "+name+"=… or LAMPLIGHT_VAR_"+name))
 			continue
 		}
 		var parsed cty.Value
@@ -84,7 +84,7 @@ func rawValue(name string, input Input) (string, bool, string) {
 	if environment == nil {
 		environment = environmentMap(os.Environ())
 	}
-	if value, exists := environment["TRACETEST_VAR_"+name]; exists {
+	if value, exists := environment["LAMPLIGHT_VAR_"+name]; exists {
 		return value, true, "environment"
 	}
 	return "", false, ""

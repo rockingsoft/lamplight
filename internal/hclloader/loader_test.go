@@ -4,7 +4,7 @@ import (
 	"path/filepath"
 	"testing"
 
-	"tracetest/internal/config"
+	"lamplight/internal/config"
 )
 
 func TestLoadProjectParsesAndValidatesFixture(t *testing.T) {

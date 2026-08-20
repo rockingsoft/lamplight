@@ -11,11 +11,11 @@ import (
 	"github.com/hashicorp/hcl/v2/hclparse"
 	"github.com/zclconf/go-cty/cty"
 	"github.com/zclconf/go-cty/cty/function"
-	"tracetest/internal/diagnostic"
-	"tracetest/internal/model"
+	"lamplight/internal/diagnostic"
+	"lamplight/internal/model"
 )
 
-const ConfigFilename = ".tracetest.hcl"
+const ConfigFilename = ".lamplight"
 
 type Options struct {
 	ConfigPath string

@@ -11,20 +11,20 @@ import (
 
 	"github.com/hashicorp/hcl/v2"
 	"github.com/zclconf/go-cty/cty"
-	"tracetest/internal/artifact"
-	"tracetest/internal/config"
-	"tracetest/internal/datasource/tempo"
-	"tracetest/internal/engine"
-	"tracetest/internal/expr"
-	"tracetest/internal/hclloader"
-	"tracetest/internal/httpstep"
-	"tracetest/internal/initcmd"
-	"tracetest/internal/model"
-	"tracetest/internal/render"
-	"tracetest/internal/result"
-	"tracetest/internal/runtimevars"
-	"tracetest/internal/selection"
-	"tracetest/internal/tracecontext"
+	"lamplight/internal/artifact"
+	"lamplight/internal/config"
+	"lamplight/internal/datasource/tempo"
+	"lamplight/internal/engine"
+	"lamplight/internal/expr"
+	"lamplight/internal/hclloader"
+	"lamplight/internal/httpstep"
+	"lamplight/internal/initcmd"
+	"lamplight/internal/model"
+	"lamplight/internal/render"
+	"lamplight/internal/result"
+	"lamplight/internal/runtimevars"
+	"lamplight/internal/selection"
+	"lamplight/internal/tracecontext"
 )
 
 type IO struct {
@@ -356,4 +356,4 @@ func printDiagnostics(w io.Writer, diags []model.Diagnostic) bool {
 	}
 	return has
 }
-func usage(w io.Writer) { fmt.Fprintln(w, "usage: tracetest <init|validate|list tests|run> [options]") }
+func usage(w io.Writer) { fmt.Fprintln(w, "usage: lamplight <init|validate|list tests|run> [options]") }

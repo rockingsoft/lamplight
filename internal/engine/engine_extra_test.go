@@ -9,8 +9,8 @@ import (
 
 	"github.com/hashicorp/hcl/v2"
 	"github.com/zclconf/go-cty/cty"
-	"tracetest/internal/datasource"
-	"tracetest/internal/model"
+	"lamplight/internal/datasource"
+	"lamplight/internal/model"
 )
 
 type traceFactory struct {

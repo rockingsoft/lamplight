@@ -12,7 +12,7 @@ import (
 	"testing"
 	"time"
 
-	"tracetest/internal/model"
+	"lamplight/internal/model"
 )
 
 type tempoRoundTrip func(*http.Request) (*http.Response, error)

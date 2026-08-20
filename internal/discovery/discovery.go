@@ -1,4 +1,4 @@
-// Package discovery finds test HCL files deterministically.
+// Package discovery finds Lamplight definition files deterministically.
 package discovery
 
 import (
@@ -9,7 +9,10 @@ import (
 	"strings"
 )
 
-// Discover returns regular .hcl files below baseDir in relative lexical order.
+const DefinitionSuffix = ".wick"
+
+// Discover returns regular Lamplight definition files below baseDir in relative
+// lexical order.
 // Directory symlinks are never followed by filepath.WalkDir; symlinked files
 // are ignored as well, making the source tree explicit and reproducible.
 func Discover(baseDir string) ([]string, error) {
@@ -28,7 +31,7 @@ func Discover(baseDir string) ([]string, error) {
 			}
 			return nil
 		}
-		if entry.IsDir() || !entry.Type().IsRegular() || !strings.HasSuffix(entry.Name(), ".hcl") || entry.Name() == ".tracetest.hcl" {
+		if entry.IsDir() || !entry.Type().IsRegular() || !strings.HasSuffix(entry.Name(), DefinitionSuffix) {
 			return nil
 		}
 		rel, err := filepath.Rel(baseDir, path)

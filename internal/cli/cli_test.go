@@ -37,10 +37,10 @@ test "health" {
     }
   }
 }`
-	if err := os.WriteFile(filepath.Join(dir, ".tracetest.hcl"), []byte(configBody), 0o600); err != nil {
+	if err := os.WriteFile(filepath.Join(dir, ".lamplight"), []byte(configBody), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(base, "health.hcl"), []byte(testBody), 0o600); err != nil {
+	if err := os.WriteFile(filepath.Join(base, "health.wick"), []byte(testBody), 0o600); err != nil {
 		t.Fatal(err)
 	}
 

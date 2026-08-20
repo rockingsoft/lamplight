@@ -10,7 +10,7 @@ import (
 	"fmt"
 	"time"
 
-	"tracetest/internal/model"
+	"lamplight/internal/model"
 )
 
 const defaultInterval = time.Second

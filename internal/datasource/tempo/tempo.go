@@ -18,7 +18,7 @@ import (
 	"strings"
 	"time"
 
-	"tracetest/internal/model"
+	"lamplight/internal/model"
 )
 
 // Config owns only Tempo datasource concerns; HTTP step settings never leak

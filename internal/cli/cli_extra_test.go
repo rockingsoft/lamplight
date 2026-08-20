@@ -11,7 +11,7 @@ import (
 	"github.com/hashicorp/hcl/v2"
 	"github.com/hashicorp/hcl/v2/hclsyntax"
 	"github.com/zclconf/go-cty/cty"
-	"tracetest/internal/model"
+	"lamplight/internal/model"
 )
 
 func cliExpr(t *testing.T, source string) hcl.Expression {
@@ -124,7 +124,7 @@ func TestTempoStoreAndDiagnostics(t *testing.T) {
 	}
 	var usageOutput bytes.Buffer
 	usage(&usageOutput)
-	if !strings.Contains(usageOutput.String(), "usage: tracetest") {
+	if !strings.Contains(usageOutput.String(), "usage: lamplight") {
 		t.Fatalf("usage=%q", usageOutput.String())
 	}
 }
@@ -136,11 +136,11 @@ func TestRunReportsSelectionAndVariableErrors(t *testing.T) {
 		t.Fatal(err)
 	}
 	config := []byte("project { base_dir = \"tests\" output = \"json\" }\n")
-	if err := os.WriteFile(filepath.Join(dir, ".tracetest.hcl"), config, 0o600); err != nil {
+	if err := os.WriteFile(filepath.Join(dir, ".lamplight"), config, 0o600); err != nil {
 		t.Fatal(err)
 	}
 	testFile := []byte("variable \"REQUIRED\" { type = string }\ntest \"health\" { step \"get\" { http_request { method = \"GET\" url = \"http://127.0.0.1:1\" } } }\n")
-	if err := os.WriteFile(filepath.Join(base, "test.hcl"), testFile, 0o600); err != nil {
+	if err := os.WriteFile(filepath.Join(base, "test.wick"), testFile, 0o600); err != nil {
 		t.Fatal(err)
 	}
 	for _, args := range [][]string{{"run", "-w", dir, "missing"}, {"run", "-w", dir, "health"}} {

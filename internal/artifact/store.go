@@ -11,8 +11,8 @@ import (
 	"strings"
 	"sync"
 
-	"tracetest/internal/model"
-	"tracetest/internal/result"
+	"lamplight/internal/model"
+	"lamplight/internal/result"
 )
 
 const (
@@ -123,7 +123,7 @@ func (s *Store) ensureRunDirectory(runID string) error {
 	if s.runDir != "" {
 		return nil
 	}
-	prefix := "tracetest-run-"
+	prefix := "lamplight-run-"
 	if safe := safeName(runID); safe != "" {
 		prefix += safe + "-"
 	}

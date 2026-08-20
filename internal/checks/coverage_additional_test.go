@@ -5,7 +5,7 @@ import (
 	"reflect"
 	"testing"
 
-	"tracetest/internal/model"
+	"lamplight/internal/model"
 )
 
 func TestEvaluateResponseRejectsMalformedAssertions(t *testing.T) {

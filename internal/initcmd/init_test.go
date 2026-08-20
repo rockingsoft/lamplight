@@ -11,7 +11,7 @@ func TestRun(t *testing.T) {
 	if err := Run(dir); err != nil {
 		t.Fatal(err)
 	}
-	for _, path := range []string{".tracetest.hcl", filepath.Join("tracetests", "healthcheck.hcl")} {
+	for _, path := range []string{".lamplight", filepath.Join("lamplight", "healthcheck.wick")} {
 		if _, err := os.Stat(filepath.Join(dir, path)); err != nil {
 			t.Fatal(err)
 		}
@@ -23,11 +23,11 @@ func TestRun(t *testing.T) {
 
 func TestRunRefusesAnExistingTestFile(t *testing.T) {
 	dir := t.TempDir()
-	baseDir := filepath.Join(dir, "tracetests")
+	baseDir := filepath.Join(dir, "lamplight")
 	if err := os.MkdirAll(baseDir, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(baseDir, "healthcheck.hcl"), []byte("existing"), 0o600); err != nil {
+	if err := os.WriteFile(filepath.Join(baseDir, "healthcheck.wick"), []byte("existing"), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	if err := Run(dir); err == nil {

@@ -7,8 +7,8 @@ import (
 	"fmt"
 	"strings"
 
-	"tracetest/internal/model"
-	"tracetest/internal/result"
+	"lamplight/internal/model"
+	"lamplight/internal/result"
 )
 
 // Format is one of the output formats accepted by the MVP.

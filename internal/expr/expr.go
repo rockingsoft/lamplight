@@ -13,7 +13,7 @@ import (
 	"github.com/zclconf/go-cty/cty/function"
 	"github.com/zclconf/go-cty/cty/function/stdlib"
 	ctyjson "github.com/zclconf/go-cty/cty/json"
-	"tracetest/internal/model"
+	"lamplight/internal/model"
 )
 
 // Functions is the whitelist used for all DSL expressions. It intentionally

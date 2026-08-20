@@ -1,7 +1,7 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://tracetest.dev/schemas/run-result-v1.schema.json",
-  "title": "Tracetest RunResult v1",
+  "$id": "https://lamplight.dev/schemas/run-result-v1.schema.json",
+  "title": "Lamplight RunResult v1",
   "type": "object",
   "required": ["schema_version", "run_id", "status", "started_at", "duration_ms", "tests", "summary"],
   "properties": {

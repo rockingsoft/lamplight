@@ -5,7 +5,7 @@ import (
 	"context"
 	"sync"
 
-	"tracetest/internal/model"
+	"lamplight/internal/model"
 )
 
 // ScriptedObservation is one result returned by Fake.Observe. Once the script
