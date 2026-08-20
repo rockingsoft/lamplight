@@ -9,7 +9,7 @@ and compatibility decisions can be discussed early.
 
 Requirements:
 
-- Go 1.23 or newer;
+- Go 1.26 or newer;
 - Git;
 - `make`;
 - GoReleaser for local release builds;
@@ -28,8 +28,7 @@ golangci-lint version through `go run`, and the race-enabled test suite. No
 separate linter installation is required. The Go tests require no database,
 container, or external service.
 
-Build only the binary for the current platform and remove generated artifacts
-with:
+Build a complete release snapshot and remove generated artifacts with:
 
 ```sh
 make build
