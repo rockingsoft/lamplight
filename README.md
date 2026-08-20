@@ -66,6 +66,32 @@ Run directly without building:
 go run ./cmd/lamplight --help
 ```
 
+### Multi-platform builds
+
+[GoReleaser](https://goreleaser.com/) builds release archives for macOS,
+Linux, and Windows on both `amd64` and `arm64`. Validate the configuration and
+create a complete local snapshot without publishing it:
+
+```sh
+goreleaser check
+goreleaser release --snapshot --clean
+```
+
+Generated binaries, archives, and checksums are written to `dist/`. To build
+only the current platform during development, run:
+
+```sh
+goreleaser build --snapshot --clean --single-target
+```
+
+CI performs a snapshot build on pull requests and pushes to `main`. Pushing a
+semantic-version tag publishes the corresponding GitHub release:
+
+```sh
+git tag -a v0.1.0 -m "v0.1.0"
+git push origin v0.1.0
+```
+
 The current CLI prints its command usage when invoked without a command.
 
 ## Quick start
