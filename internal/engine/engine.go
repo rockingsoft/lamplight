@@ -1,0 +1,360 @@
+package engine
+
+import (
+	"context"
+	"crypto/rand"
+	"encoding/hex"
+	"encoding/json"
+	"fmt"
+	"sort"
+	"time"
+
+	"github.com/hashicorp/hcl/v2"
+	"github.com/zclconf/go-cty/cty"
+	ctyjson "github.com/zclconf/go-cty/cty/json"
+	"tracetest/internal/expr"
+	"tracetest/internal/model"
+	"tracetest/internal/poller"
+	"tracetest/internal/result"
+)
+
+type Engine struct {
+	HTTP         model.HTTPExecutor
+	TraceFactory model.TraceContextFactory
+	Clock        model.Clock
+}
+
+func (e *Engine) Run(ctx context.Context, project *model.Project) model.RunResult {
+	started := time.Now()
+	run := model.RunResult{SchemaVersion: 1, RunID: randomID(), StartedAt: started, Tests: []model.TestResult{}}
+	if project == nil || project.Definition == nil || e.HTTP == nil {
+		run.Status = model.StatusError
+		run.Summary.Errors = 1
+		return run
+	}
+	if needsDatasource(project.Tests) {
+		if project.Datasource == nil {
+			return technicalRun(run, "datasource_required", "selected tests contain span checks but no datasource is configured")
+		}
+		if err := project.Datasource.TestConnection(ctx); err != nil {
+			return technicalRun(run, "datasource_connection", err.Error())
+		}
+	}
+	for index, test := range project.Tests {
+		if ctx.Err() != nil {
+			run.Tests = append(run.Tests, cancelledTests(project.Tests[index:])...)
+			break
+		}
+		tr, technical := e.runTest(ctx, project, test)
+		run.Tests = append(run.Tests, tr)
+		if technical {
+			run.Tests = append(run.Tests, skippedTests(project.Tests[index+1:])...)
+			break
+		}
+	}
+	run.DurationMS = time.Since(started).Milliseconds()
+	run = result.AggregateRun(run)
+	return run
+}
+
+func (e *Engine) runTest(ctx context.Context, project *model.Project, test model.TestDefinition) (model.TestResult, bool) {
+	started := time.Now()
+	tr := model.TestResult{Name: test.Name, Tags: test.Tags, File: test.File, Status: model.StatusPassed, Steps: []model.StepResult{}}
+	stepOutputs := map[string]map[string]cty.Value{}
+	for index, step := range test.Steps {
+		sr, technical := e.runStep(ctx, project, step, stepOutputs)
+		tr.Steps = append(tr.Steps, sr)
+		if sr.Status != model.StatusPassed {
+			tr.Status = sr.Status
+			tr.Steps = append(tr.Steps, skippedStepResults(test.Steps[index+1:])...)
+			tr.DurationMS = time.Since(started).Milliseconds()
+			return tr, technical
+		}
+	}
+	tr.DurationMS = time.Since(started).Milliseconds()
+	return tr, false
+}
+
+func (e *Engine) runStep(ctx context.Context, project *model.Project, step model.StepDefinition, previous map[string]map[string]cty.Value) (model.StepResult, bool) {
+	started := time.Now()
+	sr := model.StepResult{Name: step.Name, ExecutionID: randomID(), Status: model.StatusPassed, Checks: []model.CheckResult{}}
+	finish := func(status model.Status) (model.StepResult, bool) {
+		sr.Status = status
+		sr.DurationMS = time.Since(started).Milliseconds()
+		return sr, status == model.StatusError || status == model.StatusCancelled
+	}
+	if ctx.Err() != nil {
+		return finish(model.StatusCancelled)
+	}
+	var trace *model.TestTraceContext
+	if project.Datasource != nil {
+		if e.TraceFactory == nil {
+			sr.Error = diagnostic("trace_context", "trace context factory is not configured")
+			return finish(model.StatusError)
+		}
+		created, err := e.TraceFactory.New()
+		if err != nil {
+			sr.Error = diagnostic("trace_context", err.Error())
+			return finish(model.StatusError)
+		}
+		trace = &created
+		sr.TraceID = string(created.TraceID)
+	}
+	stepsValue := stepsCTY(previous)
+	req, err := evaluateRequest(step.HTTP, project.Variables, stepsValue)
+	if err != nil {
+		sr.Error = diagnostic("request_evaluation", err.Error())
+		return finish(model.StatusError)
+	}
+	sr.Request = &req
+	response, err := e.HTTP.Execute(ctx, req, project.HTTPClient, trace)
+	if err != nil {
+		sr.Error = diagnostic("http_execution", err.Error())
+		return finish(model.StatusError)
+	}
+	sr.Response = &response
+
+	outputs := map[string]cty.Value{}
+	for _, name := range sortedExpressions(step.Outputs) {
+		value, diags := expr.Evaluate(step.Outputs[name], expr.OutputContext(response, project.Variables, stepsValue))
+		if diags.HasErrors() || !value.IsKnown() {
+			sr.Error = diagnostic("output_evaluation", fmt.Sprintf("output %q: %s", name, diags.Error()))
+			return finish(model.StatusError)
+		}
+		outputs[name] = value
+	}
+	previous[step.Name] = outputs
+	sr.Outputs = ctyMapAny(outputs)
+
+	spanChecks := []poller.SpanCheck{}
+	responseFailed := false
+	for _, check := range step.Checks {
+		cr := model.CheckResult{Name: check.Name, Status: model.StatusPassed}
+		for _, name := range sortedExpressions(check.Response) {
+			value, diags := expr.Evaluate(check.Response[name], expr.ResponseContext(response, project.Variables, stepsValue))
+			ev := model.AssertionEvidence{Name: name, Source: model.Range(check.Response[name].Range())}
+			if diags.HasErrors() {
+				ev.Error = diags.Error()
+				cr.ResponseEvidence = append(cr.ResponseEvidence, ev)
+				sr.Checks = append(sr.Checks, cr)
+				sr.Error = diagnostic("check_evaluation", fmt.Sprintf("check %q: %s", check.Name, diags.Error()))
+				return finish(model.StatusError)
+			}
+			passed, err := expr.RequireBool(value)
+			if err != nil {
+				sr.Error = diagnostic("check_type", fmt.Sprintf("check %q condition %q: %v", check.Name, name, err))
+				return finish(model.StatusError)
+			}
+			ev.Passed, ev.Value = passed, passed
+			cr.ResponseEvidence = append(cr.ResponseEvidence, ev)
+			if !passed {
+				cr.Status, cr.Reason, responseFailed = model.StatusFailed, "response_condition_failed", true
+			}
+		}
+		sr.Checks = append(sr.Checks, cr)
+		if check.Spans != nil {
+			definition := check
+			spanChecks = append(spanChecks, poller.SpanCheck{Name: check.Name, Rule: check.Spans.Rule, Match: spanMatcher(definition, response, project.Variables, stepsValue)})
+		}
+	}
+	if responseFailed {
+		return finish(model.StatusFailed)
+	}
+	if len(spanChecks) > 0 {
+		window, settle := traceWindows(project.Definition.Datasource, step.Checks)
+		polled, err := poller.Poll(ctx, project.Datasource, trace.TraceID, poller.Config{ObservationWindow: window, SettleWindow: settle, Clock: e.Clock}, spanChecks)
+		if err != nil {
+			sr.Error = diagnostic("trace_observation", err.Error())
+			return finish(model.StatusError)
+		}
+		for _, observed := range polled.Checks {
+			if observed.Reason == "trace_not_observed" {
+				sr.Error = diagnostic("trace_not_observed", "trace was not observed before the observation window elapsed")
+				return finish(model.StatusError)
+			}
+			mergeCheck(&sr.Checks, observed)
+			if observed.Status == model.StatusFailed {
+				sr.Status = model.StatusFailed
+			} else if observed.Status == model.StatusCancelled {
+				return finish(model.StatusCancelled)
+			}
+		}
+	}
+	return finish(sr.Status)
+}
+
+func evaluateRequest(def model.HTTPRequestDefinition, variables map[string]model.SensitiveValue, steps cty.Value) (model.HTTPRequest, error) {
+	ctx := &hcl.EvalContext{Variables: map[string]cty.Value{"var": expr.Variables(variables), "steps": steps}, Functions: expr.Functions()}
+	stringValue := func(name string, expression hcl.Expression, required bool) (string, error) {
+		if expression == nil {
+			if required {
+				return "", fmt.Errorf("%s is required", name)
+			}
+			return "", nil
+		}
+		value, diags := expr.Evaluate(expression, ctx)
+		if diags.HasErrors() || !value.IsKnown() || value.IsNull() || value.Type() != cty.String {
+			return "", fmt.Errorf("%s must evaluate to string: %s", name, diags.Error())
+		}
+		return value.AsString(), nil
+	}
+	method, err := stringValue("method", def.Method, true)
+	if err != nil {
+		return model.HTTPRequest{}, err
+	}
+	url, err := stringValue("url", def.URL, true)
+	if err != nil {
+		return model.HTTPRequest{}, err
+	}
+	body, err := stringValue("body", def.Body, false)
+	if err != nil {
+		return model.HTTPRequest{}, err
+	}
+	headers := map[string]string{}
+	for _, name := range sortedExpressions(def.Headers) {
+		headers[name], err = stringValue("header "+name, def.Headers[name], true)
+		if err != nil {
+			return model.HTTPRequest{}, err
+		}
+	}
+	return model.HTTPRequest{Method: method, URL: url, Headers: headers, Body: body}, nil
+}
+
+func spanMatcher(check model.CheckDefinition, response model.Response, variables map[string]model.SensitiveValue, steps cty.Value) func(model.Span) (bool, error) {
+	return func(span model.Span) (bool, error) {
+		ctx := expr.SpanContext(span, response, variables, steps)
+		expressions := []hcl.Expression{}
+		if check.Spans.Matching != nil {
+			expressions = append(expressions, check.Spans.Matching)
+		}
+		for _, name := range sortedExpressions(check.Spans.Assertions) {
+			expressions = append(expressions, check.Spans.Assertions[name])
+		}
+		for _, expression := range expressions {
+			value, diags := expr.Evaluate(expression, ctx)
+			if diags.HasErrors() {
+				return false, fmt.Errorf("span predicate: %s", diags.Error())
+			}
+			passed, err := expr.RequireBool(value)
+			if err != nil || !passed {
+				return false, err
+			}
+		}
+		return true, nil
+	}
+}
+
+func traceWindows(datasource *model.DatasourceDefinition, checks []model.CheckDefinition) (time.Duration, time.Duration) {
+	window, settle := 30*time.Second, 2*time.Second
+	if datasource != nil {
+		if datasource.ObservationWindow > 0 {
+			window = datasource.ObservationWindow
+		}
+		if datasource.SettleWindow > 0 {
+			settle = datasource.SettleWindow
+		}
+	}
+	for _, check := range checks {
+		if check.Spans != nil && check.Spans.ObservationWindow > window {
+			window = check.Spans.ObservationWindow
+		}
+	}
+	return window, settle
+}
+
+func stepsCTY(values map[string]map[string]cty.Value) cty.Value {
+	if len(values) == 0 {
+		return cty.EmptyObjectVal
+	}
+	steps := map[string]cty.Value{}
+	for step, outputs := range values {
+		object := cty.EmptyObjectVal
+		if len(outputs) > 0 {
+			object = cty.ObjectVal(outputs)
+		}
+		steps[step] = cty.ObjectVal(map[string]cty.Value{"outputs": object})
+	}
+	return cty.ObjectVal(steps)
+}
+
+func ctyMapAny(values map[string]cty.Value) map[string]any {
+	result := map[string]any{}
+	for name, value := range values {
+		encoded, err := ctyjson.Marshal(value, value.Type())
+		if err == nil {
+			var decoded any
+			if json.Unmarshal(encoded, &decoded) == nil {
+				result[name] = decoded
+			}
+		}
+	}
+	return result
+}
+
+func sortedExpressions(values map[string]hcl.Expression) []string {
+	names := make([]string, 0, len(values))
+	for n := range values {
+		names = append(names, n)
+	}
+	sort.Strings(names)
+	return names
+}
+func mergeCheck(values *[]model.CheckResult, observed model.CheckResult) {
+	for i := range *values {
+		if (*values)[i].Name == observed.Name {
+			observed.ResponseEvidence = (*values)[i].ResponseEvidence
+			*values = append((*values)[:i], append([]model.CheckResult{observed}, (*values)[i+1:]...)...)
+			return
+		}
+	}
+	*values = append(*values, observed)
+}
+func needsDatasource(tests []model.TestDefinition) bool {
+	for _, t := range tests {
+		for _, s := range t.Steps {
+			for _, c := range s.Checks {
+				if c.Spans != nil {
+					return true
+				}
+			}
+		}
+	}
+	return false
+}
+func skippedStepResults(steps []model.StepDefinition) []model.StepResult {
+	out := make([]model.StepResult, len(steps))
+	for i, s := range steps {
+		out[i] = model.StepResult{Name: s.Name, ExecutionID: randomID(), Status: model.StatusSkipped, Checks: []model.CheckResult{}}
+	}
+	return out
+}
+func skippedTests(tests []model.TestDefinition) []model.TestResult {
+	out := make([]model.TestResult, len(tests))
+	for i, t := range tests {
+		out[i] = model.TestResult{Name: t.Name, Tags: t.Tags, File: t.File, Status: model.StatusSkipped, Steps: skippedStepResults(t.Steps)}
+	}
+	return out
+}
+func cancelledTests(tests []model.TestDefinition) []model.TestResult {
+	out := skippedTests(tests)
+	if len(out) > 0 {
+		out[0].Status = model.StatusCancelled
+	}
+	return out
+}
+func diagnostic(code, message string) *model.Diagnostic {
+	return &model.Diagnostic{Severity: "error", Code: code, Message: message}
+}
+func randomID() string {
+	var b [16]byte
+	if _, err := rand.Read(b[:]); err != nil {
+		return fmt.Sprintf("%d", time.Now().UnixNano())
+	}
+	return hex.EncodeToString(b[:])
+}
+func technicalRun(run model.RunResult, code, message string) model.RunResult {
+	run.Status = model.StatusError
+	run.Summary.Errors = 1
+	run.Tests = []model.TestResult{{Name: "run", Status: model.StatusError, Error: diagnostic(code, message), Steps: []model.StepResult{}}}
+	return run
+}

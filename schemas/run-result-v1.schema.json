@@ -1,0 +1,113 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://tracetest.dev/schemas/run-result-v1.schema.json",
+  "title": "Tracetest RunResult v1",
+  "type": "object",
+  "required": ["schema_version", "run_id", "status", "started_at", "duration_ms", "tests", "summary"],
+  "properties": {
+    "schema_version": { "const": 1 },
+    "run_id": { "type": "string", "minLength": 1 },
+    "status": { "enum": ["passed", "failed", "error", "cancelled"] },
+    "started_at": { "type": "string", "format": "date-time" },
+    "duration_ms": { "type": "integer", "minimum": 0 },
+    "selection": { "type": "object" },
+    "summary": {
+      "type": "object",
+      "required": ["tests_total", "tests_passed", "tests_failed", "errors"],
+      "properties": {
+        "tests_total": { "type": "integer", "minimum": 0 },
+        "tests_passed": { "type": "integer", "minimum": 0 },
+        "tests_failed": { "type": "integer", "minimum": 0 },
+        "errors": { "type": "integer", "minimum": 0 }
+      },
+      "additionalProperties": false
+    },
+    "tests": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/test" }
+    },
+    "artifacts": { "type": "array", "items": { "$ref": "#/$defs/artifact" } }
+  },
+  "$defs": {
+    "status": { "enum": ["passed", "failed", "error", "cancelled", "skipped"] },
+    "test": {
+      "type": "object",
+      "required": ["name", "tags", "file", "status", "duration_ms", "steps"],
+      "properties": {
+        "name": { "type": "string" },
+        "tags": { "type": "array", "items": { "type": "string" } },
+        "file": { "type": "string" },
+        "status": { "$ref": "#/$defs/status" },
+        "duration_ms": { "type": "integer", "minimum": 0 },
+        "steps": { "type": "array", "items": { "$ref": "#/$defs/step" } },
+        "error": { "$ref": "#/$defs/diagnostic" }
+      },
+      "additionalProperties": false
+    },
+    "step": {
+      "type": "object",
+      "required": ["name", "execution_id", "status", "checks"],
+      "properties": {
+        "name": { "type": "string" },
+        "execution_id": { "type": "string" },
+        "status": { "$ref": "#/$defs/status" },
+        "trace_id": { "type": "string" },
+        "request": { "type": "object" },
+        "response": { "type": "object" },
+        "outputs": { "type": "object" },
+        "checks": { "type": "array", "items": { "$ref": "#/$defs/check" } },
+        "error": { "$ref": "#/$defs/diagnostic" },
+        "artifacts": { "type": "array", "items": { "$ref": "#/$defs/artifact" } }
+      },
+      "additionalProperties": false
+    },
+    "check": {
+      "type": "object",
+      "required": ["name", "status"],
+      "properties": {
+        "name": { "type": "string" },
+        "status": { "$ref": "#/$defs/status" },
+        "response_evidence": { "type": "array", "items": { "$ref": "#/$defs/evidence" } },
+        "span_evidence": { "type": "object" },
+        "reason": { "type": "string" }
+      },
+      "additionalProperties": false
+    },
+    "evidence": {
+      "type": "object",
+      "required": ["name", "passed"],
+      "properties": {
+        "name": { "type": "string" },
+        "passed": { "type": "boolean" },
+        "value": {},
+        "error": { "type": "string" },
+        "source": { "type": "object" }
+      },
+      "additionalProperties": false
+    },
+    "diagnostic": {
+      "type": "object",
+      "required": ["severity", "code", "message"],
+      "properties": {
+        "severity": { "enum": ["error", "warning", "info"] },
+        "code": { "type": "string" },
+        "message": { "type": "string" },
+        "file": { "type": "string" },
+        "range": { "type": "object" },
+        "suggestion": { "type": "string" },
+        "sensitive_redacted": { "type": "boolean" }
+      },
+      "additionalProperties": false
+    },
+    "artifact": {
+      "type": "object",
+      "required": ["kind", "path"],
+      "properties": {
+        "kind": { "type": "string" },
+        "path": { "type": "string" }
+      },
+      "additionalProperties": false
+    }
+  },
+  "additionalProperties": false
+}
