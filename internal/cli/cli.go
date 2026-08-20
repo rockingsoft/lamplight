@@ -15,7 +15,7 @@ import (
 	"github.com/zclconf/go-cty/cty"
 	"lamplight/internal/artifact"
 	"lamplight/internal/config"
-	"lamplight/internal/datasource/tempo"
+	"lamplight/internal/datasource"
 	"lamplight/internal/engine"
 	"lamplight/internal/expr"
 	"lamplight/internal/hclloader"
@@ -219,7 +219,7 @@ func run(ctx context.Context, args []string, streams IO) int {
 		runtimeProject.HTTPClient.Proxy = value
 	}
 	if def.Datasource != nil {
-		store, err := tempoStore(def.Datasource, values)
+		store, err := datasourceStore(def.Datasource, values)
 		if err != nil {
 			fmt.Fprintln(streams.Err, "error: datasource:", err)
 			return 1
@@ -284,7 +284,7 @@ func normalizeRunArgs(args []string) []string {
 	return append(flags, positionals...)
 }
 
-func tempoStore(def *model.DatasourceDefinition, values map[string]model.SensitiveValue) (model.DataStore, error) {
+func datasourceStore(def *model.DatasourceDefinition, values map[string]model.SensitiveValue) (model.DataStore, error) {
 	endpoint, err := evalString(def.Endpoint, values)
 	if err != nil {
 		return nil, err
@@ -303,7 +303,7 @@ func tempoStore(def *model.DatasourceDefinition, values map[string]model.Sensiti
 			return nil, err
 		}
 	}
-	return tempo.New(tempo.Config{Endpoint: endpoint, Headers: headers, BearerToken: token, TLSSkipVerify: def.TLSSkipVerify})
+	return datasource.New(datasource.Config{Kind: def.Kind, Endpoint: endpoint, Headers: headers, BearerToken: token, TLSSkipVerify: def.TLSSkipVerify})
 }
 
 func evalString(expression hcl.Expression, values map[string]model.SensitiveValue) (string, error) {

@@ -143,11 +143,22 @@ datasource "tempo" {
 }
 ```
 
+Supported labels are `awsxray`, `azureappinsights`, `dash0`, `datadog`,
+`dynatrace`, `elasticapm`, `honeycomb`, `instana`, `jaeger`, `lightstep`,
+`newrelic`, `opensearch`, `otlp`, `signalfx`, `signoz`, `sumologic`, and
+`tempo`.
+
+| Adapter mode | Backends | `endpoint` meaning |
+| --- | --- | --- |
+| Direct query | `tempo`, `jaeger`, `elasticapm`, `opensearch`, `signalfx` | Provider query URL. Elastic/OpenSearch URLs include the index. |
+| Embedded OTLP/HTTP | `otlp`, `newrelic`, `lightstep`, `datadog`, `honeycomb`, `signoz`, `dynatrace`, `instana`, `dash0` | Local listener such as `http://127.0.0.1:4318`; export to `/v1/traces`. |
+| OTLP adaptation | `awsxray`, `azureappinsights`, `sumologic` | Local listener. Lamplight ingests their collector output instead of holding cloud query credentials. |
+
 Datasource properties:
 
 | Property | Required | Type | Default | Expression context | Description |
 | --- | --- | --- | --- | --- | --- |
-| `endpoint` | yes | string expression | — | `var` | Base URL. Lamplight appends `/ready` and `/api/traces/<trace-id>`. |
+| `endpoint` | yes | string expression | — | `var` | Query URL or local OTLP listener, according to the adapter table. |
 | `observation_window` | no | literal `duration(...)` | `30s` | none | Hard polling limit per step. Must be positive. |
 | `settle_window` | no | literal `duration(...)` | `2s` | none | Stability period used to finish negative checks early. Must be positive. |
 | `headers` | no | map of string expressions | `{}` | `var` | Headers added to readiness and trace requests. Keys are static strings. |
@@ -162,14 +173,14 @@ Datasource properties:
 
 | Property | Required | Type | Default | Description |
 | --- | --- | --- | --- | --- |
-| `skip_verify` | no | literal boolean | `false` | Disables certificate verification for Tempo requests. |
+| `skip_verify` | no | literal boolean | `false` | Disables certificate verification for direct HTTP requests. |
 
 Use `headers.Authorization` instead of `auth.bearer_token` when a proxy needs a
 different authorization scheme, such as HTTP Basic.
 
-Tempo is optional for response-only tests. When any selected test contains a
+The datasource is optional for response-only tests. When a selected test contains a
 `spans` block, a datasource is required and `TestConnection` runs once before
-the first HTTP request. `validate` and `list tests` never connect to Tempo.
+the first HTTP request. `validate` and `list tests` never connect to a backend.
 
 ## 4. Variables
 
@@ -762,7 +773,7 @@ Terraform features such as `locals`, modules, providers, or `env()`.
 
 Before generating or changing a project, an automated agent should verify:
 
-1. There is one root `project` and at most one `datasource "tempo"`.
+1. There is one root `project` and at most one supported `datasource` block.
 2. `project.base_dir` exists and is literal.
 3. Every variable and test name is globally unique.
 4. Every test has at least one step.

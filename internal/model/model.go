@@ -72,6 +72,25 @@ type DatasourceDefinition struct {
 	SettleWindow      time.Duration
 }
 
+// SupportedDatasourceKinds is the public set of tracing backends inherited
+// from Tracetest. SaaS backends use Lamplight's local OTLP ingestion adapter;
+// the remaining backends are queried directly.
+var SupportedDatasourceKinds = []string{
+	"awsxray", "azureappinsights", "dash0", "datadog", "dynatrace",
+	"elasticapm", "honeycomb", "instana", "jaeger", "lightstep",
+	"newrelic", "opensearch", "otlp", "signalfx", "signoz",
+	"sumologic", "tempo",
+}
+
+func IsSupportedDatasourceKind(kind string) bool {
+	for _, supported := range SupportedDatasourceKinds {
+		if kind == supported {
+			return true
+		}
+	}
+	return false
+}
+
 type HTTPRequestDefinition struct {
 	Method  hcl.Expression
 	URL     hcl.Expression

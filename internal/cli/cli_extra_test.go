@@ -71,6 +71,7 @@ func TestVarsFlagAndSmallCLIHelpers(t *testing.T) {
 	definition := &model.ProjectDefinition{
 		HTTPProxy: cliExpr(t, `"proxy"`),
 		Datasource: &model.DatasourceDefinition{
+			Kind:     "tempo",
 			Endpoint: cliExpr(t, `"http://localhost:3200"`), BearerToken: cliExpr(t, `"token"`),
 			Headers: map[string]hcl.Expression{"X": cliExpr(t, `"header"`)},
 		},
@@ -101,17 +102,17 @@ func TestVarsFlagAndSmallCLIHelpers(t *testing.T) {
 
 func TestTempoStoreAndDiagnostics(t *testing.T) {
 	values := map[string]model.SensitiveValue{"ENDPOINT": {Value: cty.StringVal("http://localhost:3200")}, "TOKEN": {Value: cty.StringVal("token")}}
-	definition := &model.DatasourceDefinition{Endpoint: cliExpr(t, `var.ENDPOINT`), Headers: map[string]hcl.Expression{"X": cliExpr(t, `"header"`)}, BearerToken: cliExpr(t, `var.TOKEN`)}
-	if store, err := tempoStore(definition, values); err != nil || store == nil {
+	definition := &model.DatasourceDefinition{Kind: "tempo", Endpoint: cliExpr(t, `var.ENDPOINT`), Headers: map[string]hcl.Expression{"X": cliExpr(t, `"header"`)}, BearerToken: cliExpr(t, `var.TOKEN`)}
+	if store, err := datasourceStore(definition, values); err != nil || store == nil {
 		t.Fatalf("store=%#v err=%v", store, err)
 	}
-	if _, err := tempoStore(&model.DatasourceDefinition{Endpoint: cliExpr(t, `"not-a-url"`)}, nil); err == nil {
+	if _, err := datasourceStore(&model.DatasourceDefinition{Kind: "tempo", Endpoint: cliExpr(t, `"not-a-url"`)}, nil); err == nil {
 		t.Fatal("expected invalid endpoint error")
 	}
-	if _, err := tempoStore(&model.DatasourceDefinition{Endpoint: cliExpr(t, `"http://localhost:3200"`), Headers: map[string]hcl.Expression{"X": cliExpr(t, `var.MISSING`)}}, nil); err == nil {
+	if _, err := datasourceStore(&model.DatasourceDefinition{Kind: "tempo", Endpoint: cliExpr(t, `"http://localhost:3200"`), Headers: map[string]hcl.Expression{"X": cliExpr(t, `var.MISSING`)}}, nil); err == nil {
 		t.Fatal("expected invalid header error")
 	}
-	if _, err := tempoStore(&model.DatasourceDefinition{Endpoint: cliExpr(t, `"http://localhost:3200"`), BearerToken: cliExpr(t, `var.MISSING`)}, nil); err == nil {
+	if _, err := datasourceStore(&model.DatasourceDefinition{Kind: "tempo", Endpoint: cliExpr(t, `"http://localhost:3200"`), BearerToken: cliExpr(t, `var.MISSING`)}, nil); err == nil {
 		t.Fatal("expected invalid bearer token error")
 	}
 

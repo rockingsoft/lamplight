@@ -23,8 +23,8 @@ observability while exploring a smaller, declarative architecture. See
 - Correlates each trigger execution with an independent W3C trace context when
   a tracing backend is configured.
 - Checks trigger results and trace data with named DSL expressions.
-- Queries a tracing backend by trace ID. The first implemented backend is
-  Tempo.
+- Queries tracing backends by trace ID through direct provider APIs or receives
+  traces through an embedded OTLP/HTTP endpoint.
 - Preserves redacted run artifacts on failures and optionally on success.
 
 Lamplight has no server, database, dashboard, account system, or cloud
@@ -33,9 +33,14 @@ exits.
 
 ## Status
 
-The current MVP implements an HTTP trigger and a Tempo tracing backend. The
+The current MVP implements an HTTP trigger and all tracing backend families
+supported by the original Tracetest: Tempo, Jaeger, Elastic APM, OpenSearch,
+SignalFx/Splunk Observability, OTLP, New Relic, Lightstep, Datadog, Honeycomb,
+SigNoz, Dynatrace, Instana, Dash0, AWS X-Ray, Azure Application Insights, and
+Sumo Logic. The
 automated suite covers the CLI, DSL loader, expression runtime, trigger
-execution, trace polling, Tempo adapter, artifacts, redaction, and renderers.
+execution, trace polling, backend adapters, OTLP ingestion, artifacts,
+redaction, and renderers.
 A real Tempo integration has also been validated against an external
 deployment.
 

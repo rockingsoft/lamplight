@@ -47,6 +47,8 @@ func TestParseDatasourceTable(t *testing.T) {
 		wantDiags bool
 	}{
 		{name: "unsupported kind", source: `datasource "other" { endpoint = "x" }`, wantNil: true, wantDiags: true},
+		{name: "jaeger", source: `datasource "jaeger" { endpoint = "http://localhost:16686" }`},
+		{name: "otlp provider", source: `datasource "datadog" { endpoint = "http://localhost:4318" }`},
 		{name: "missing endpoint", source: `datasource "tempo" {}`, wantNil: true, wantDiags: true},
 		{name: "complete", source: "datasource \"tempo\" {\n  endpoint = var.ENDPOINT\n  headers = { X = \"one\" }\n  observation_window = duration(\"4s\")\n  settle_window = duration(\"1s\")\n  auth { bearer_token = var.TOKEN }\n  tls { skip_verify = true }\n}\n", wantDiags: true},
 		{name: "duplicate auth tls", source: "datasource \"tempo\" {\n  endpoint = \"x\"\n  auth { bearer_token = \"one\" }\n  auth { bearer_token = \"two\" }\n  tls { skip_verify = false }\n  tls { skip_verify = false }\n}\n", wantDiags: true},

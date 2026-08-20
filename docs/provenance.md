@@ -18,7 +18,8 @@ The implementation intentionally differs in scope:
 - one CLI process rather than a persistent control plane;
 - a Lamplight-specific DSL, using HCL syntax, as the source of truth;
 - an extensible trigger model, currently implemented by `http_request`;
-- tracing backends, currently implemented by the Tempo adapter;
+- tracing backends adapted from the original supported set, using direct
+  provider queries or an embedded OTLP/HTTP receiver;
 - local artifacts and stdout rather than a database or dashboard;
 - no copied compatibility promise with the original project's DSL, API, UI, or
   deployment model.
@@ -34,26 +35,38 @@ DSL contract, execution engine, Tempo adapter, result schema, and tests. Its
 lineage with the original project does not imply source-code or API
 compatibility.
 
+The backend inventory and externally observable request/response behavior were
+cross-checked against `kubeshop/tracetest` commit
+`64eb49ff2037e0ba5d16237278d984758e7c7309`. The agent implementation at that
+revision is covered by the Tracetest Community License, so Lamplight does not
+copy those source files. The adapters in `internal/datasource` are original,
+smaller implementations against the providers' wire formats and Lamplight's
+`model.DataStore` contract.
+
 When contributing code influenced by another implementation, identify the
 source and license in the pull request before copying or adapting it. Do not
 paste code with uncertain provenance.
 
 ## Direct Go dependencies
 
-The module currently has two direct third-party dependencies:
+The module's direct third-party dependencies are:
 
 | Dependency | Purpose | Upstream license |
 | --- | --- | --- |
 | `github.com/hashicorp/hcl/v2` | HCL parsing, syntax diagnostics, and expression evaluation | Mozilla Public License 2.0 |
+| `github.com/modelcontextprotocol/go-sdk` | MCP server transport and protocol types | MIT License |
 | `github.com/zclconf/go-cty` | Typed values and standard HCL-compatible functions | MIT License |
+| `go.opentelemetry.io/proto/otlp` | Standard OTLP trace request types | Apache License 2.0 |
+| `google.golang.org/protobuf` | OTLP protobuf and proto-JSON encoding | BSD 3-Clause License |
 
 Transitive dependencies and exact versions are recorded in `go.mod` and
 `go.sum`. Release automation should generate a complete dependency and license
 inventory from the locked module graph rather than treating this table as a
 substitute for a software bill of materials.
 
-Tempo is accessed over its HTTP API. This repository does not embed or vendor
-Tempo source code.
+Direct-query providers are accessed over their HTTP APIs. Collector-backed
+providers send standard OTLP/HTTP protobuf or JSON to Lamplight's embedded
+receiver. This repository does not embed provider source code.
 
 ## Project license
 

@@ -13,7 +13,7 @@ are:
 - strict validation before performing network operations;
 - sequential trigger execution with explicit data flow between steps;
 - W3C trace-context correlation without a control-plane service;
-- bounded polling of Tempo;
+- bounded polling of direct-query and embedded-OTLP tracing backends;
 - stable, machine-readable results and redacted local artifacts;
 - interfaces at I/O boundaries so behavior can be tested without networks or
   wall-clock delays.
@@ -96,8 +96,9 @@ generated W3C trace context. The current HTTP trigger carries it in
 before injection so the execution ID is authoritative. The system under test
 must propagate that context and export spans using the same trace ID.
 
-All span checks in one step share a single poller lifecycle. The Tempo adapter
-normalizes Tempo's OTLP JSON response into `model.Span`; the poller evaluates
+All span checks in one step share a single poller lifecycle. Direct adapters
+normalize provider responses into `model.Span`; collector-backed providers
+share an embedded OTLP/HTTP receiver and in-memory trace store. The poller evaluates
 all predicates over each observation. Positive minimum checks may complete as
 soon as their threshold is reached. Negative or exact checks require trace
 completion, stability, an exceeded bound, or the observation deadline. See
@@ -120,7 +121,12 @@ completion, stability, an exceeded bound, or the observation deadline. See
 | `internal/httpstep` | Bounded HTTP execution, redirects, proxy/TLS settings, response decoding, and trace-header injection. |
 | `internal/tracecontext` | Cryptographically random W3C trace and span identifiers. |
 | `internal/checks` | Response assertion evaluation helpers. |
-| `internal/datasource/tempo` | Readiness probe, trace fetch, retry classification, and OTLP JSON normalization. |
+| `internal/datasource` | Backend registry and adapter construction. |
+| `internal/datasource/tempo` | Tempo readiness, trace fetch, and OTLP JSON normalization. |
+| `internal/datasource/jaeger` | Jaeger query API and JSON normalization. |
+| `internal/datasource/search` | Elastic APM and OpenSearch query/normalization. |
+| `internal/datasource/signalfx` | Splunk Observability trace-segment query/normalization. |
+| `internal/datasource/otlp` | Embedded OTLP/HTTP receiver and in-memory trace store. |
 | `internal/datasource/fake.go` | Scriptable datasource used by tests. |
 | `internal/poller` | Deterministic trace-observation state machine and quantity-rule evaluation. |
 | `internal/result` | Run aggregation, JSON v1 encoding, and recursive secret redaction. |
@@ -176,7 +182,7 @@ compatibility decision:
 2. Command names, flags, output formats, and exit codes.
 3. Result JSON and `schemas/run-result-v1.schema.json`.
 4. Artifact names, retention, permissions, and redaction guarantees.
-5. Tempo request paths, accepted payload forms, and retry semantics.
+5. Backend request paths, accepted payload forms, and retry semantics.
 
 An internal refactor that preserves those contracts does not require a schema
 version change. A breaking JSON change does. Additive DSL changes should still

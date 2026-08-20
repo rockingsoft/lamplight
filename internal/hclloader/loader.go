@@ -62,15 +62,15 @@ func (loader Loader) LoadProject(options config.Options) (*model.ProjectDefiniti
 
 func parseDatasource(block *hcl.Block) (*model.DatasourceDefinition, []model.Diagnostic) {
 	var diags []model.Diagnostic
-	if len(block.Labels) != 1 || block.Labels[0] != "tempo" {
-		return nil, []model.Diagnostic{diagnostic.Error(diagnostic.CodeSchema, "the only supported datasource is datasource \"tempo\"", block.DefRange, "use datasource \"tempo\"")}
+	if len(block.Labels) != 1 || !model.IsSupportedDatasourceKind(block.Labels[0]) {
+		return nil, []model.Diagnostic{diagnostic.Error(diagnostic.CodeSchema, fmt.Sprintf("unsupported datasource %q", strings.Join(block.Labels, " ")), block.DefRange, "use one of: "+strings.Join(model.SupportedDatasourceKinds, ", "))}
 	}
 	content, hclDiags := block.Body.Content(&hcl.BodySchema{Attributes: []hcl.AttributeSchema{{Name: "endpoint", Required: true}, {Name: "observation_window"}, {Name: "settle_window"}, {Name: "headers"}}, Blocks: []hcl.BlockHeaderSchema{{Type: "auth"}, {Type: "tls"}}})
 	diags = append(diags, diagnostic.FromHCL(hclDiags, diagnostic.CodeSchema)...)
 	if _, ok := content.Attributes["endpoint"]; !ok {
 		return nil, diags
 	}
-	datasource := &model.DatasourceDefinition{Kind: "tempo", Endpoint: content.Attributes["endpoint"].Expr, Headers: map[string]hcl.Expression{}, ObservationWindow: 30 * time.Second, SettleWindow: 2 * time.Second}
+	datasource := &model.DatasourceDefinition{Kind: block.Labels[0], Endpoint: content.Attributes["endpoint"].Expr, Headers: map[string]hcl.Expression{}, ObservationWindow: 30 * time.Second, SettleWindow: 2 * time.Second}
 	if attr, ok := content.Attributes["headers"]; ok {
 		values, ds := expressionMap(attr.Expr)
 		datasource.Headers = values
