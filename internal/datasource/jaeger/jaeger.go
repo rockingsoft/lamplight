@@ -36,7 +36,7 @@ type Store struct {
 func New(c Config) (*Store, error) {
 	u, err := url.Parse(c.Endpoint)
 	if err != nil || !u.IsAbs() || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" {
-		return nil, fmt.Errorf("Jaeger endpoint must be absolute http or https: %q", c.Endpoint)
+		return nil, fmt.Errorf("jaeger endpoint must be absolute http or https: %q", c.Endpoint)
 	}
 	h := make(http.Header, len(c.Headers)+1)
 	for k, v := range c.Headers {
@@ -76,7 +76,7 @@ func (s *Store) Observe(ctx context.Context, id model.TraceID) (model.TraceObser
 	if err != nil {
 		return model.TraceObservation{}, observationError(err, true)
 	}
-	defer r.Body.Close()
+	defer func() { _ = r.Body.Close() }()
 	if r.StatusCode == http.StatusNotFound {
 		return model.TraceObservation{Found: false, Valid: true}, nil
 	}
@@ -165,7 +165,7 @@ func (s *Store) do(ctx context.Context, p ...string) (*http.Response, error) {
 }
 func statusError(r *http.Response) error {
 	b, _ := io.ReadAll(io.LimitReader(r.Body, 4096))
-	return observationError(fmt.Errorf("Jaeger returned HTTP %d: %s", r.StatusCode, strings.TrimSpace(string(b))), r.StatusCode == 404 || r.StatusCode == 429 || r.StatusCode >= 500)
+	return observationError(fmt.Errorf("jaeger returned HTTP %d: %s", r.StatusCode, strings.TrimSpace(string(b))), r.StatusCode == 404 || r.StatusCode == 429 || r.StatusCode >= 500)
 }
 func observationError(err error, retry bool) error {
 	return &model.ObservationError{Err: err, Retriable: retry}

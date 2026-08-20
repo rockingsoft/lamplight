@@ -59,7 +59,7 @@ func (s *Store) TestConnection(ctx context.Context) error {
 	if e != nil {
 		return obs(e, true)
 	}
-	defer r.Body.Close()
+	defer func() { _ = r.Body.Close() }()
 	if r.StatusCode >= 200 && r.StatusCode < 300 {
 		return nil
 	}
@@ -78,7 +78,7 @@ func (s *Store) Observe(ctx context.Context, id model.TraceID) (model.TraceObser
 	if e != nil {
 		return model.TraceObservation{}, obs(e, true)
 	}
-	defer r.Body.Close()
+	defer func() { _ = r.Body.Close() }()
 	if r.StatusCode < 200 || r.StatusCode >= 300 {
 		return model.TraceObservation{}, status(s.kind, r)
 	}

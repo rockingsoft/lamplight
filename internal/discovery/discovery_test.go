@@ -77,7 +77,7 @@ func TestDiscoverPropagatesPermissionWalkError(t *testing.T) {
 	if err := os.Chmod(blocked, 0); err != nil {
 		t.Fatal(err)
 	}
-	defer os.Chmod(blocked, 0o755)
+	defer func() { _ = os.Chmod(blocked, 0o755) }()
 	if _, err := Discover(dir); err == nil {
 		t.Skip("the test process can traverse mode-000 directories")
 	}

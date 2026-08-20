@@ -12,10 +12,10 @@ import (
 func TestObserve(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if strings.HasSuffix(r.URL.Path, "/segments") {
-			w.Write([]byte(`[123]`))
+			_, _ = w.Write([]byte(`[123]`))
 			return
 		}
-		w.Write([]byte(`[{"traceId":"0123456789abcdef0123456789abcdef","spanId":"abcd","operationName":"work","durationMicros":2,"tags":{"http.method":"GET"},"processTags":{"service.name":"api"}}]`))
+		_, _ = w.Write([]byte(`[{"traceId":"0123456789abcdef0123456789abcdef","spanId":"abcd","operationName":"work","durationMicros":2,"tags":{"http.method":"GET"},"processTags":{"service.name":"api"}}]`))
 	}))
 	defer srv.Close()
 	s, _ := New(Config{Endpoint: srv.URL})

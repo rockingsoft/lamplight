@@ -68,7 +68,7 @@ func executeKafka(ctx context.Context, request model.TriggerRequest, trace *mode
 	if err != nil {
 		return model.Response{}, fmt.Errorf("create kafka producer: %w", err)
 	}
-	defer producer.Close()
+	defer func() { _ = producer.Close() }()
 	headers := stringMap(request.Attributes["headers"])
 	if trace != nil {
 		headers["traceparent"] = trace.TraceParent()
@@ -98,9 +98,9 @@ func executePlaywright(ctx context.Context, request model.TriggerRequest, trace 
 		return model.Response{}, err
 	}
 	path := tmp.Name()
-	defer os.Remove(path)
+	defer func() { _ = os.Remove(path) }()
 	if _, err := tmp.WriteString(stringAttr(request, "script")); err != nil {
-		tmp.Close()
+		_ = tmp.Close()
 		return model.Response{}, err
 	}
 	if err := tmp.Close(); err != nil {

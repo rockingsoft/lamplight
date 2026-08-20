@@ -60,7 +60,7 @@ func (e *Executor) Execute(ctx context.Context, request model.HTTPRequest, confi
 	if err != nil {
 		return model.Response{}, fmt.Errorf("execute HTTP request: %w", err)
 	}
-	defer response.Body.Close()
+	defer func() { _ = response.Body.Close() }()
 	body, err := readBody(response.Body, config.MaxResponseBodyBytes)
 	if err != nil {
 		return model.Response{}, err

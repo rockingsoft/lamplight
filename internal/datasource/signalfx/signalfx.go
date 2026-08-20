@@ -58,7 +58,7 @@ func (s *Store) TestConnection(ctx context.Context) error {
 	if e != nil {
 		return obs(e, true)
 	}
-	defer r.Body.Close()
+	defer func() { _ = r.Body.Close() }()
 	if r.StatusCode == 200 || r.StatusCode == 404 {
 		return nil
 	}
@@ -69,7 +69,7 @@ func (s *Store) Observe(ctx context.Context, id model.TraceID) (model.TraceObser
 	if e != nil {
 		return model.TraceObservation{}, obs(e, true)
 	}
-	defer r.Body.Close()
+	defer func() { _ = r.Body.Close() }()
 	if r.StatusCode == 404 {
 		return model.TraceObservation{Found: false, Valid: true}, nil
 	}
@@ -88,7 +88,7 @@ func (s *Store) Observe(ctx context.Context, id model.TraceID) (model.TraceObser
 			return model.TraceObservation{}, obs(e, true)
 		}
 		b, _ := io.ReadAll(io.LimitReader(res.Body, 32<<20))
-		res.Body.Close()
+		_ = res.Body.Close()
 		raw = append(raw, b...)
 		if res.StatusCode != 200 {
 			continue

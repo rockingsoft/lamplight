@@ -13,10 +13,10 @@ func TestSearch(t *testing.T) {
 		t.Run(kind, func(t *testing.T) {
 			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				if r.Method == "GET" {
-					w.Write([]byte(`{"version":{}}`))
+					_, _ = w.Write([]byte(`{"version":{}}`))
 					return
 				}
-				w.Write([]byte(`{"hits":{"hits":[{"_source":{"trace":{"id":"0123456789abcdef0123456789abcdef"},"span":{"id":"abcd","name":"work","duration":{"us":2}},"service":{"name":"api"}}}]}}`))
+				_, _ = w.Write([]byte(`{"hits":{"hits":[{"_source":{"trace":{"id":"0123456789abcdef0123456789abcdef"},"span":{"id":"abcd","name":"work","duration":{"us":2}},"service":{"name":"api"}}}]}}`))
 			}))
 			defer srv.Close()
 			s, e := New(Config{Kind: kind, Endpoint: srv.URL + "/traces"})

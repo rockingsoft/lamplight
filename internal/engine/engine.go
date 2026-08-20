@@ -1,3 +1,4 @@
+// Package engine executes Lamplight test definitions.
 package engine
 
 import (

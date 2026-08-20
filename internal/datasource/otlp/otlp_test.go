@@ -18,12 +18,12 @@ import (
 func TestReceiver(t *testing.T) {
 	ln, _ := net.Listen("tcp", "127.0.0.1:0")
 	addr := ln.Addr().String()
-	ln.Close()
+	_ = ln.Close()
 	s, err := New(Config{Endpoint: "http://" + addr})
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer s.Close()
+	defer func() { _ = s.Close() }()
 	if err = s.TestConnection(context.Background()); err != nil {
 		t.Fatal(err)
 	}
@@ -35,7 +35,7 @@ func TestReceiver(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	r.Body.Close()
+	_ = r.Body.Close()
 	got, err := s.Observe(context.Background(), model.TraceID(hex.EncodeToString(tid)))
 	if err != nil || len(got.Spans) != 1 || got.Spans[0].Resource["service.name"] != "shop" {
 		t.Fatalf("%#v %v", got, err)

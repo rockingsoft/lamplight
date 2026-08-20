@@ -94,7 +94,7 @@ func (s *Store) Observe(_ context.Context, id model.TraceID) (model.TraceObserva
 	sort.Slice(spans, func(i, j int) bool { return spans[i].SpanID < spans[j].SpanID })
 	h := sha256.New()
 	for _, sp := range spans {
-		fmt.Fprintf(h, "%s\x00%s\x00%s\x00%d\n", sp.SpanID, sp.ParentSpanID, sp.Name, sp.Duration)
+		_, _ = fmt.Fprintf(h, "%s\x00%s\x00%s\x00%d\n", sp.SpanID, sp.ParentSpanID, sp.Name, sp.Duration)
 	}
 	return model.TraceObservation{Found: true, Valid: true, Complete: false, Spans: spans, Fingerprint: hex.EncodeToString(h.Sum(nil))}, nil
 }

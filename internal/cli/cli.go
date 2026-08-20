@@ -1,3 +1,4 @@
+// Package cli implements Lamplight's command-line interface.
 package cli
 
 import (

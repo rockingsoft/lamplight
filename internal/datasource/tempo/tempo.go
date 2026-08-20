@@ -43,7 +43,7 @@ type Store struct {
 func New(config Config) (*Store, error) {
 	endpoint, err := url.Parse(config.Endpoint)
 	if err != nil || !endpoint.IsAbs() || (endpoint.Scheme != "http" && endpoint.Scheme != "https") || endpoint.Host == "" {
-		return nil, fmt.Errorf("Tempo endpoint must be absolute http or https: %q", config.Endpoint)
+		return nil, fmt.Errorf("tempo endpoint must be absolute http or https: %q", config.Endpoint)
 	}
 	headers := make(http.Header, len(config.Headers)+1)
 	for key, value := range config.Headers {
@@ -69,7 +69,7 @@ func (s *Store) TestConnection(ctx context.Context) error {
 	if err != nil {
 		return classifyTransport(err)
 	}
-	defer response.Body.Close()
+	defer func() { _ = response.Body.Close() }()
 	if response.StatusCode >= 200 && response.StatusCode < 300 {
 		return nil
 	}
@@ -85,7 +85,7 @@ func (s *Store) Observe(ctx context.Context, traceID model.TraceID) (model.Trace
 	if err != nil {
 		return model.TraceObservation{}, classifyTransport(err)
 	}
-	defer response.Body.Close()
+	defer func() { _ = response.Body.Close() }()
 	if response.StatusCode < 200 || response.StatusCode >= 300 {
 		return model.TraceObservation{}, classifyStatus(response)
 	}
@@ -214,7 +214,7 @@ func decodeTrace(body []byte, traceID model.TraceID) (model.TraceObservation, er
 	}
 	batches := append(payload.Batches, payload.ResourceSpans...)
 	if batches == nil {
-		return model.TraceObservation{}, &model.ObservationError{Err: errors.New("Tempo response has no batches or resourceSpans"), Retriable: false}
+		return model.TraceObservation{}, &model.ObservationError{Err: errors.New("tempo response has no batches or resourceSpans"), Retriable: false}
 	}
 	complete := !payload.Partial
 	if payload.Complete != nil {
@@ -231,7 +231,7 @@ func decodeTrace(body []byte, traceID model.TraceID) (model.TraceObservation, er
 					return model.TraceObservation{}, &model.ObservationError{Err: fmt.Errorf("invalid Tempo trace ID: %w", err), Retriable: false}
 				}
 				if normalizedTraceID != "" && !strings.EqualFold(normalizedTraceID, string(traceID)) {
-					return model.TraceObservation{}, &model.ObservationError{Err: errors.New("Tempo response trace ID does not match requested trace"), Retriable: false}
+					return model.TraceObservation{}, &model.ObservationError{Err: errors.New("tempo response trace ID does not match requested trace"), Retriable: false}
 				}
 				source.TraceID = normalizedTraceID
 				span, err := normalizeSpan(source, resourceAttributes)

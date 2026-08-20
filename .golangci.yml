@@ -1,0 +1,17 @@
+version: "2"
+
+linters:
+  settings:
+    staticcheck:
+      checks:
+        - all
+        - -QF*
+        - -ST1000
+  exclusions:
+    rules:
+      # grpcurl's descriptor APIs still use the legacy protobuf reflection
+      # types; migrating these imports requires changing that integration.
+      - path: internal/trigger/grpc\.go
+        linters:
+          - staticcheck
+        text: 'SA1019:'

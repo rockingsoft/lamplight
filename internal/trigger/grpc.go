@@ -26,7 +26,7 @@ func executeGRPC(ctx context.Context, request model.TriggerRequest, trace *model
 	if err != nil {
 		return model.Response{}, err
 	}
-	defer os.Remove(tmp.Name())
+	defer func() { _ = os.Remove(tmp.Name()) }()
 	if _, err = tmp.WriteString(content); err != nil {
 		return model.Response{}, err
 	}
@@ -41,7 +41,7 @@ func executeGRPC(ctx context.Context, request model.TriggerRequest, trace *model
 	if err != nil {
 		return model.Response{}, fmt.Errorf("dial gRPC service: %w", err)
 	}
-	defer conn.Close()
+	defer func() { _ = conn.Close() }()
 	parser, _, err := grpcurl.RequestParserAndFormatter(grpcurl.FormatJSON, source, strings.NewReader(stringAttr(request, "request")), grpcurl.FormatOptions{EmitJSONDefaultFields: true, AllowUnknownFields: true})
 	if err != nil {
 		return model.Response{}, err

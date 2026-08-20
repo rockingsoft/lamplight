@@ -1,3 +1,4 @@
+// Package initcmd initializes Lamplight projects.
 package initcmd
 
 import (

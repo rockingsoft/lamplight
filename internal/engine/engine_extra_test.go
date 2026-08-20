@@ -173,7 +173,7 @@ func TestRunStepErrorAndCancellationBranches(t *testing.T) {
 		t.Run(test.name, func(t *testing.T) {
 			project := engineProject(base)
 			http := &recordingHTTP{response: model.Response{StatusCode: 200, Headers: map[string][]string{}}}
-			var ctx context.Context = context.Background()
+			ctx := context.Background()
 			if test.name == "cancelled before request" {
 				var cancel context.CancelFunc
 				ctx, cancel = context.WithCancel(ctx)
