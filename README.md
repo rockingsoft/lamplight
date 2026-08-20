@@ -116,6 +116,35 @@ The MCP server lets agents list and read test definitions, create or edit
 lint the project, and execute selected tests. See the
 [MCP server guide](docs/mcp.md) for client configuration and safety details.
 
+### Agent skills
+
+The repository includes complementary Agent Skills-compatible guides:
+
+- `lamplight-trace-tests` teaches agents to design resilient trace-based tests,
+  choose meaningful span evidence, and author Lamplight definitions;
+- `opentelemetry-instrumentation` teaches agents to instrument applications
+  with automatic instrumentation first, configure exporters and environment
+  profiles, and add useful non-duplicative manual spans.
+
+From a local checkout, install both for Claude Code and Codex with:
+
+```sh
+npx skills add . \
+  --skill lamplight-trace-tests opentelemetry-instrumentation \
+  --agent claude-code codex
+```
+
+After publishing the repository on GitHub, install them remotely with:
+
+```sh
+npx skills add <owner>/lamplight \
+  --skill lamplight-trace-tests opentelemetry-instrumentation \
+  --agent claude-code codex
+```
+
+Add `--global` to make the skills available across projects. Their source
+lives under [`skills`](skills).
+
 Supply runtime variables through the environment or CLI:
 
 ```sh
