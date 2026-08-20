@@ -223,7 +223,7 @@ func atomicWrite(target string, data []byte) error {
 		return fmt.Errorf("create temporary artifact %s: %w", filepath.Base(target), err)
 	}
 	temporaryName := temporary.Name()
-	defer os.Remove(temporaryName)
+	defer func() { _ = os.Remove(temporaryName) }()
 	if err := temporary.Chmod(fileMode); err != nil {
 		_ = temporary.Close()
 		return fmt.Errorf("restrict temporary artifact %s: %w", filepath.Base(target), err)

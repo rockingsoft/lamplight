@@ -61,7 +61,7 @@ func (s *Store) TestConnection(ctx context.Context) error {
 	if err != nil {
 		return observationError(err, true)
 	}
-	defer r.Body.Close()
+	defer func() { _ = r.Body.Close() }()
 	if r.StatusCode >= 200 && r.StatusCode < 300 {
 		return nil
 	}

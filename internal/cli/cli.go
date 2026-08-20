@@ -65,7 +65,7 @@ func Main(ctx context.Context, args []string, streams IO) int {
 			dir = "."
 		}
 		if err := initcmd.Run(dir); err != nil {
-			fmt.Fprintln(streams.Err, "error:", err)
+			writeLine(streams.Err, "error:", err)
 			return 1
 		}
 		return 0
@@ -91,7 +91,7 @@ func Main(ctx context.Context, args []string, streams IO) int {
 
 func migrate(args []string, streams IO) int {
 	if len(args) == 0 || args[0] != "tracetest" {
-		fmt.Fprintln(streams.Err, "error: migrate requires the source format: tracetest")
+		writeLine(streams.Err, "error: migrate requires the source format: tracetest")
 		return 1
 	}
 	fs := flag.NewFlagSet("migrate tracetest", flag.ContinueOnError)
@@ -102,18 +102,18 @@ func migrate(args []string, streams IO) int {
 		return 1
 	}
 	if len(fs.Args()) != 1 {
-		fmt.Fprintln(streams.Err, "error: migrate tracetest requires one YAML file or directory")
+		writeLine(streams.Err, "error: migrate tracetest requires one YAML file or directory")
 		return 1
 	}
 	results, err := tracetestmigrate.Run(fs.Args()[0], *outputDir, *force)
 	if err != nil {
-		fmt.Fprintln(streams.Err, "error:", err)
+		writeLine(streams.Err, "error:", err)
 		return 1
 	}
 	for _, result := range results {
-		fmt.Fprintf(streams.Out, "%s -> %s\n", result.Source, result.Destination)
+		writef(streams.Out, "%s -> %s\n", result.Source, result.Destination)
 		for _, warning := range result.Warnings {
-			fmt.Fprintln(streams.Err, "warning:", warning)
+			writeLine(streams.Err, "warning:", warning)
 		}
 	}
 	return 0
@@ -125,7 +125,7 @@ func runMCP(ctx context.Context, args []string, streams IO) int {
 		return 1
 	}
 	if len(fs.Args()) != 0 {
-		fmt.Fprintln(streams.Err, "error: mcp accepts no positional arguments")
+		writeLine(streams.Err, "error: mcp accepts no positional arguments")
 		return 1
 	}
 	server := mcpserver.New(mcpserver.Options{
@@ -138,7 +138,7 @@ func runMCP(ctx context.Context, args []string, streams IO) int {
 		},
 	})
 	if err := server.Run(ctx, &mcp.StdioTransport{}); err != nil {
-		fmt.Fprintln(streams.Err, "error: mcp:", err)
+		writeLine(streams.Err, "error: mcp:", err)
 		return 1
 	}
 	return 0
@@ -172,7 +172,7 @@ func validate(args []string, streams IO) int {
 	if !ok {
 		return 1
 	}
-	fmt.Fprintf(streams.Out, "Valid: %d tests, %d variables\n", len(def.Tests), len(def.Variables))
+	writef(streams.Out, "Valid: %d tests, %d variables\n", len(def.Tests), len(def.Variables))
 	return 0
 }
 
@@ -192,7 +192,7 @@ func listTests(args []string, streams IO) int {
 	sort.Strings(names)
 	for _, name := range names {
 		t := def.Tests[name]
-		fmt.Fprintf(streams.Out, "%s\ttags=%s\tfile=%s\trequires_datasource=%t\n", t.Name, strings.Join(t.Tags, ","), t.File, testNeedsDatasource(t))
+		writef(streams.Out, "%s\ttags=%s\tfile=%s\trequires_datasource=%t\n", t.Name, strings.Join(t.Tags, ","), t.File, testNeedsDatasource(t))
 	}
 	return 0
 }
@@ -225,7 +225,7 @@ func run(ctx context.Context, args []string, streams IO) int {
 	}
 	remaining := fs.Args()
 	if len(remaining) > 1 {
-		fmt.Fprintln(streams.Err, "error: run accepts at most one test name")
+		writeLine(streams.Err, "error: run accepts at most one test name")
 		return 1
 	}
 	name := ""
@@ -238,7 +238,7 @@ func run(ctx context.Context, args []string, streams IO) int {
 	}
 	tests, err := selection.Select(def, selection.Selector{Name: name, Tag: *tag})
 	if err != nil {
-		fmt.Fprintln(streams.Err, "error:", err)
+		writeLine(streams.Err, "error:", err)
 		return 1
 	}
 	expressions := collectExpressions(def, tests)
@@ -250,7 +250,7 @@ func run(ctx context.Context, args []string, streams IO) int {
 	if def.HTTPProxy != nil {
 		value, err := evalString(def.HTTPProxy, values)
 		if err != nil {
-			fmt.Fprintln(streams.Err, "error: proxy:", err)
+			writeLine(streams.Err, "error: proxy:", err)
 			return 1
 		}
 		runtimeProject.HTTPClient.Proxy = value
@@ -258,7 +258,7 @@ func run(ctx context.Context, args []string, streams IO) int {
 	if def.Datasource != nil {
 		store, err := datasourceStore(def.Datasource, values)
 		if err != nil {
-			fmt.Fprintln(streams.Err, "error: datasource:", err)
+			writeLine(streams.Err, "error: datasource:", err)
 			return 1
 		}
 		runtimeProject.Datasource = store
@@ -269,12 +269,12 @@ func run(ctx context.Context, args []string, streams IO) int {
 	redactor := result.NewRedactor(sensitiveStrings(values)...)
 	store, err := artifact.NewStore(*artifactsDir, redactor)
 	if err != nil {
-		fmt.Fprintln(streams.Err, "error: artifacts:", err)
+		writeLine(streams.Err, "error: artifacts:", err)
 		return 1
 	}
 	refs, err := store.Finalize(context.WithoutCancel(ctx), runResult, *keep)
 	if err != nil {
-		fmt.Fprintln(streams.Err, "error: artifacts:", err)
+		writeLine(streams.Err, "error: artifacts:", err)
 		return 1
 	}
 	runResult.Artifacts = refs
@@ -284,17 +284,17 @@ func run(ctx context.Context, args []string, streams IO) int {
 	}
 	renderer, err := render.New(render.Format(format), redactor)
 	if err != nil {
-		fmt.Fprintln(streams.Err, "error:", err)
+		writeLine(streams.Err, "error:", err)
 		return 1
 	}
 	encoded, err := renderer.Render(runResult)
 	if err != nil {
-		fmt.Fprintln(streams.Err, "error: render:", err)
+		writeLine(streams.Err, "error: render:", err)
 		return 1
 	}
 	_, _ = streams.Out.Write(encoded)
 	for _, ref := range refs {
-		fmt.Fprintln(streams.Err, "artifacts:", ref.Path)
+		writeLine(streams.Err, "artifacts:", ref.Path)
 	}
 	return result.ExitCode(runResult)
 }
@@ -416,11 +416,11 @@ func testNeedsDatasource(t model.TestDefinition) bool {
 func printDiagnostics(w io.Writer, diags []model.Diagnostic) bool {
 	has := false
 	for _, d := range diags {
-		fmt.Fprintf(w, "%s[%s]: %s", d.Severity, d.Code, d.Message)
+		writef(w, "%s[%s]: %s", d.Severity, d.Code, d.Message)
 		if d.File != "" {
-			fmt.Fprintf(w, " (%s:%d:%d)", d.File, d.Range.StartLine, d.Range.StartColumn)
+			writef(w, " (%s:%d:%d)", d.File, d.Range.StartLine, d.Range.StartColumn)
 		}
-		fmt.Fprintln(w)
+		writeLine(w)
 		if d.Severity == "error" {
 			has = true
 		}
@@ -428,7 +428,7 @@ func printDiagnostics(w io.Writer, diags []model.Diagnostic) bool {
 	return has
 }
 func usage(w io.Writer) {
-	fmt.Fprint(w, `Lamplight runs trace-based integration tests.
+	writeString(w, `Lamplight runs trace-based integration tests.
 
 Usage:
   lamplight <command> [options]
@@ -458,7 +458,7 @@ func handleHelp(args []string, streams IO) (bool, int) {
 		if printCommandHelp(streams.Out, args[1:]) {
 			return true, 0
 		}
-		fmt.Fprintf(streams.Err, "error: unknown help topic %q\n\n", strings.Join(args[1:], " "))
+		writef(streams.Err, "error: unknown help topic %q\n\n", strings.Join(args[1:], " "))
 		usage(streams.Err)
 		return true, 1
 	}
@@ -571,7 +571,13 @@ Options:
 	}
 	text, ok := help[topic]
 	if ok {
-		fmt.Fprint(w, text)
+		writeString(w, text)
 	}
 	return ok
 }
+
+// CLI output is best-effort: command results determine the exit code, while a
+// closed output stream cannot be reported without risking another failed write.
+func writeLine(w io.Writer, args ...any)             { _, _ = fmt.Fprintln(w, args...) }
+func writef(w io.Writer, format string, args ...any) { _, _ = fmt.Fprintf(w, format, args...) }
+func writeString(w io.Writer, value string)          { _, _ = io.WriteString(w, value) }
