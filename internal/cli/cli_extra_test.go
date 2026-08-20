@@ -24,7 +24,7 @@ func cliExpr(t *testing.T, source string) hcl.Expression {
 }
 
 func TestMainUsageAndFlagErrors(t *testing.T) {
-	for _, args := range [][]string{nil, {"unknown"}, {"list"}, {"list", "nope"}, {"validate", "--unknown"}, {"run", "--unknown"}, {"init", "--unknown"}, {"run", "one", "two"}} {
+	for _, args := range [][]string{nil, {"unknown"}, {"list"}, {"list", "nope"}, {"validate", "--unknown"}, {"run", "--unknown"}, {"init", "--unknown"}, {"run", "one", "two"}, {"migrate"}, {"migrate", "other"}, {"migrate", "tracetest"}} {
 		var out, stderr bytes.Buffer
 		if code := Main(context.Background(), args, IO{Out: &out, Err: &stderr}); code != 1 {
 			t.Fatalf("args=%v code=%d out=%q err=%q", args, code, out.String(), stderr.String())
@@ -32,6 +32,25 @@ func TestMainUsageAndFlagErrors(t *testing.T) {
 		if stderr.Len() == 0 {
 			t.Fatalf("args=%v produced no diagnostic", args)
 		}
+	}
+}
+
+func TestMainMigratesTracetestProject(t *testing.T) {
+	input := filepath.Join(t.TempDir(), "legacy.yaml")
+	yaml := "type: Test\nspec:\n  name: Health\n  trigger:\n    type: http\n    httpRequest:\n      method: GET\n      url: http://localhost/health\n  specs:\n    - name: ok\n      selector: span[]\n      assertions:\n        - tracetest.response.status = 200\n"
+	if err := os.WriteFile(input, []byte(yaml), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	output := t.TempDir()
+	var stdout, stderr bytes.Buffer
+	code := Main(context.Background(), []string{"migrate", "tracetest", "--output-dir", output, input}, IO{Out: &stdout, Err: &stderr})
+	if code != 0 || !strings.Contains(stdout.String(), "health.wick") {
+		t.Fatalf("code=%d stdout=%q stderr=%q", code, stdout.String(), stderr.String())
+	}
+	stdout.Reset()
+	stderr.Reset()
+	if code := Main(context.Background(), []string{"validate", "-w", output}, IO{Out: &stdout, Err: &stderr}); code != 0 || !strings.Contains(stdout.String(), "Valid: 1 tests") {
+		t.Fatalf("validate code=%d stdout=%q stderr=%q", code, stdout.String(), stderr.String())
 	}
 }
 

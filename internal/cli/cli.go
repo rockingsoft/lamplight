@@ -28,6 +28,7 @@ import (
 	"lamplight/internal/runtimevars"
 	"lamplight/internal/selection"
 	"lamplight/internal/tracecontext"
+	"lamplight/internal/tracetestmigrate"
 )
 
 type IO struct {
@@ -76,10 +77,42 @@ func Main(ctx context.Context, args []string, streams IO) int {
 		return run(ctx, args[1:], streams)
 	case "mcp":
 		return runMCP(ctx, args[1:], streams)
+	case "migrate":
+		return migrate(args[1:], streams)
 	default:
 		usage(streams.Err)
 		return 1
 	}
+}
+
+func migrate(args []string, streams IO) int {
+	if len(args) == 0 || args[0] != "tracetest" {
+		fmt.Fprintln(streams.Err, "error: migrate requires the source format: tracetest")
+		return 1
+	}
+	fs := flag.NewFlagSet("migrate tracetest", flag.ContinueOnError)
+	fs.SetOutput(streams.Err)
+	outputDir := fs.String("output-dir", ".", "Lamplight project output directory")
+	force := fs.Bool("force", false, "overwrite generated .wick files")
+	if fs.Parse(args[1:]) != nil {
+		return 1
+	}
+	if len(fs.Args()) != 1 {
+		fmt.Fprintln(streams.Err, "error: migrate tracetest requires one YAML file or directory")
+		return 1
+	}
+	results, err := tracetestmigrate.Run(fs.Args()[0], *outputDir, *force)
+	if err != nil {
+		fmt.Fprintln(streams.Err, "error:", err)
+		return 1
+	}
+	for _, result := range results {
+		fmt.Fprintf(streams.Out, "%s -> %s\n", result.Source, result.Destination)
+		for _, warning := range result.Warnings {
+			fmt.Fprintln(streams.Err, "warning:", warning)
+		}
+	}
+	return 0
 }
 
 func runMCP(ctx context.Context, args []string, streams IO) int {
@@ -387,5 +420,5 @@ func printDiagnostics(w io.Writer, diags []model.Diagnostic) bool {
 	return has
 }
 func usage(w io.Writer) {
-	fmt.Fprintln(w, "usage: lamplight <init|validate|list tests|run|mcp> [options]")
+	fmt.Fprintln(w, "usage: lamplight <init|validate|list tests|run|mcp|migrate tracetest> [options]")
 }

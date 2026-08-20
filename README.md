@@ -86,6 +86,17 @@ Validate and inspect the project:
 ./lamplight list tests
 ```
 
+Migrate legacy Tracetest YAML tests into a new Lamplight project:
+
+```sh
+./lamplight migrate tracetest ./tracetest-tests --output-dir ./migrated
+./lamplight validate --working-dir ./migrated
+```
+
+The migrator supports Tracetest HTTP tests and fails explicitly on constructs
+that cannot be represented safely. See the CLI reference for the conversion
+contract and review warnings emitted for span assertion semantics.
+
 Run all tests, one test, or a tag:
 
 ```sh

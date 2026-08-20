@@ -623,6 +623,29 @@ Options:
 With no selector, all tests run once. A test name and `--tag` cannot be
 combined. A selector that matches nothing is an error.
 
+### 13.5 `lamplight migrate tracetest`
+
+```text
+lamplight migrate tracetest [--output-dir DIR] [--force] INPUT
+```
+
+Migrates a legacy Tracetest `type: Test` YAML file, or all `.yaml` and `.yml`
+files below an input directory, into a Lamplight project. The default output
+directory is the current directory. The command creates `.lamplight` when it
+does not exist and writes one `lamplight/<test-name>.wick` file per test.
+
+The migration supports HTTP triggers, headers, bodies, `${VARIABLE}`
+references, single-span selectors, response status/body assertions, span and
+resource attribute comparisons, duration assertions, and selected-span count
+rules. Generated variables have no default and are supplied with
+`LAMPLIGHT_VAR_<NAME>` or `--var NAME=VALUE`.
+
+The command refuses to overwrite `.wick` files unless `--force` is supplied.
+It rejects unsupported resource types, triggers, selector chains, assertion
+operators, and values instead of silently discarding them. A warning is
+printed when Tracetest's “assert every selected span” behavior is approximated
+by Lamplight's matching-span quantity rule; review those generated checks.
+
 ## 14. Execution and failure semantics
 
 Execution order:
