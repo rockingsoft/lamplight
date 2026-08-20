@@ -44,6 +44,9 @@ func Main(ctx context.Context, args []string, streams IO) int {
 	if streams.Err == nil {
 		streams.Err = os.Stderr
 	}
+	if handled, exitCode := handleHelp(args, streams); handled {
+		return exitCode
+	}
 	if len(args) == 0 {
 		usage(streams.Err)
 		return 1
@@ -425,5 +428,150 @@ func printDiagnostics(w io.Writer, diags []model.Diagnostic) bool {
 	return has
 }
 func usage(w io.Writer) {
-	fmt.Fprintln(w, "usage: lamplight <init|validate|list tests|run|mcp|migrate tracetest> [options]")
+	fmt.Fprint(w, `Lamplight runs trace-based integration tests.
+
+Usage:
+  lamplight <command> [options]
+
+Commands:
+  init                 Create a new Lamplight project
+  validate             Validate the project without running tests
+  list tests           List discovered tests
+  run [TEST_NAME]      Run all tests or one named test
+  mcp                  Start the MCP server over stdio
+  migrate tracetest    Convert Tracetest YAML tests to Lamplight
+  help [COMMAND]       Show help for a command
+
+Run "lamplight help <command>" for details about a command.
+`)
+}
+
+func handleHelp(args []string, streams IO) (bool, int) {
+	if len(args) == 0 {
+		return false, 0
+	}
+	if args[0] == "help" {
+		if len(args) == 1 {
+			usage(streams.Out)
+			return true, 0
+		}
+		if printCommandHelp(streams.Out, args[1:]) {
+			return true, 0
+		}
+		fmt.Fprintf(streams.Err, "error: unknown help topic %q\n\n", strings.Join(args[1:], " "))
+		usage(streams.Err)
+		return true, 1
+	}
+	if args[0] == "--help" || args[0] == "-h" {
+		usage(streams.Out)
+		return true, 0
+	}
+	for _, arg := range args[1:] {
+		if arg == "--help" || arg == "-h" {
+			path := args[:1]
+			if (args[0] == "list" || args[0] == "migrate") && len(args) > 1 {
+				path = args[:2]
+			}
+			if printCommandHelp(streams.Out, path) {
+				return true, 0
+			}
+			return false, 0
+		}
+	}
+	return false, 0
+}
+
+func printCommandHelp(w io.Writer, path []string) bool {
+	topic := strings.Join(path, " ")
+	help := map[string]string{
+		"init": `Create a new Lamplight project.
+
+Usage:
+  lamplight init [options]
+
+Options:
+  -w, --working-dir DIR  Directory to initialize (default: current directory)
+  -h, --help             Show this help
+`,
+		"validate": `Validate the project without executing tests or contacting a datasource.
+
+Usage:
+  lamplight validate [options]
+
+Options:
+  -c, --config FILE      Project config path
+  -w, --working-dir DIR  Working directory
+  -h, --help             Show this help
+`,
+		"list": `List project resources.
+
+Usage:
+  lamplight list tests [options]
+
+Commands:
+  tests  List discovered tests
+`,
+		"list tests": `List discovered tests, their tags, source files, and datasource requirements.
+
+Usage:
+  lamplight list tests [options]
+
+Options:
+  -c, --config FILE      Project config path
+  -w, --working-dir DIR  Working directory
+  -h, --help             Show this help
+`,
+		"run": `Run all tests, one named test, or tests matching a tag.
+
+Usage:
+  lamplight run [options] [TEST_NAME]
+  lamplight run [TEST_NAME] [options]
+
+Options:
+  -c, --config FILE       Project config path
+  -w, --working-dir DIR   Working directory
+      --tag TAG           Run tests containing TAG
+      --var NAME=VALUE    Override a variable (repeatable)
+      --output FORMAT     Output format: pretty, text, or json
+      --keep-artifacts    Keep artifacts for successful runs
+      --artifacts-dir DIR Artifact parent directory
+  -h, --help              Show this help
+`,
+		"mcp": `Start the Lamplight MCP server over stdio.
+
+Usage:
+  lamplight mcp [options]
+
+Options:
+  -c, --config FILE      Project config path
+  -w, --working-dir DIR  Working directory
+  -h, --help             Show this help
+`,
+		"migrate": `Convert tests from another test format.
+
+Usage:
+  lamplight migrate tracetest [options] INPUT
+
+Commands:
+  tracetest  Convert a Tracetest YAML file or directory
+`,
+		"migrate tracetest": `Convert Tracetest YAML tests into a Lamplight project.
+
+Usage:
+  lamplight migrate tracetest [options] INPUT
+
+Arguments:
+  INPUT  Tracetest YAML file or directory containing .yaml/.yml files
+
+Options:
+      --output-dir DIR  Output project directory (default: current directory)
+      --force           Overwrite generated .wick files
+  -h, --help            Show this help
+`,
+	}
+	text, ok := help[topic]
+	if ok {
+		fmt.Fprint(w, text)
+	}
+	return ok
 }

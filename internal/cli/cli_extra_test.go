@@ -35,6 +35,47 @@ func TestMainUsageAndFlagErrors(t *testing.T) {
 	}
 }
 
+func TestMainHelp(t *testing.T) {
+	tests := []struct {
+		args []string
+		want []string
+	}{
+		{[]string{"--help"}, []string{"Usage:", "Commands:", "run [TEST_NAME]"}},
+		{[]string{"-h"}, []string{"Lamplight runs trace-based integration tests."}},
+		{[]string{"help"}, []string{"migrate tracetest", "help [COMMAND]"}},
+		{[]string{"help", "run"}, []string{"--var NAME=VALUE", "--keep-artifacts"}},
+		{[]string{"run", "health", "--help"}, []string{"lamplight run [options] [TEST_NAME]"}},
+		{[]string{"list", "tests", "-h"}, []string{"datasource requirements", "--config FILE"}},
+		{[]string{"migrate", "tracetest", "--help"}, []string{"Arguments:", "--output-dir DIR"}},
+	}
+	for _, test := range tests {
+		t.Run(strings.Join(test.args, " "), func(t *testing.T) {
+			var stdout, stderr bytes.Buffer
+			if code := Main(context.Background(), test.args, IO{Out: &stdout, Err: &stderr}); code != 0 {
+				t.Fatalf("code=%d stderr=%q", code, stderr.String())
+			}
+			if stderr.Len() != 0 {
+				t.Fatalf("stderr=%q", stderr.String())
+			}
+			for _, want := range test.want {
+				if !strings.Contains(stdout.String(), want) {
+					t.Errorf("output %q does not contain %q", stdout.String(), want)
+				}
+			}
+		})
+	}
+}
+
+func TestMainUnknownHelpTopic(t *testing.T) {
+	var stdout, stderr bytes.Buffer
+	if code := Main(context.Background(), []string{"help", "nope"}, IO{Out: &stdout, Err: &stderr}); code != 1 {
+		t.Fatalf("code=%d", code)
+	}
+	if stdout.Len() != 0 || !strings.Contains(stderr.String(), `unknown help topic "nope"`) {
+		t.Fatalf("stdout=%q stderr=%q", stdout.String(), stderr.String())
+	}
+}
+
 func TestMainMigratesTracetestProject(t *testing.T) {
 	input := filepath.Join(t.TempDir(), "legacy.yaml")
 	yaml := "type: Test\nspec:\n  name: Health\n  trigger:\n    type: http\n    httpRequest:\n      method: GET\n      url: http://localhost/health\n  specs:\n    - name: ok\n      selector: span[]\n      assertions:\n        - tracetest.response.status = 200\n"
@@ -144,7 +185,7 @@ func TestTempoStoreAndDiagnostics(t *testing.T) {
 	}
 	var usageOutput bytes.Buffer
 	usage(&usageOutput)
-	if !strings.Contains(usageOutput.String(), "usage: lamplight") {
+	if !strings.Contains(usageOutput.String(), "Usage:") || !strings.Contains(usageOutput.String(), "lamplight <command>") {
 		t.Fatalf("usage=%q", usageOutput.String())
 	}
 }
