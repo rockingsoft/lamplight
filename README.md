@@ -98,12 +98,10 @@ goreleaser check
 make build
 ```
 
-Generated binaries, archives, checksums, and a multi-architecture OCI executor
-image are written to `dist/`. Because Docker cannot load a multi-platform OCI
-image into its classic local image store, `make build` also loads the platform
-matching the active Docker Engine under the exact snapshot tag used by the CLI.
-This makes the resulting binary immediately usable with `docker_compose`
-targets.
+Generated binaries, archives, and checksums are written to `dist/`. GoReleaser
+also builds the executor image for `linux/amd64` and `linux/arm64`. Snapshot
+images use platform-suffixed tags; set `LAMPLIGHT_RUNNER_IMAGE` when running a
+snapshot binary against one of them locally.
 
 Remove all generated GoReleaser artifacts with:
 
