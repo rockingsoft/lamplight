@@ -91,10 +91,11 @@ require unused variables.
 ## Trace lifecycle
 
 When a tracing backend is configured, every trigger step receives a newly
-generated W3C trace context. The current HTTP trigger carries it in
-`traceparent`; user-provided `traceparent` and `tracestate` headers are removed
-before injection so the execution ID is authoritative. The system under test
-must propagate that context and export spans using the same trace ID.
+generated W3C trace context. Triggers carry it in `traceparent` and identify
+Lamplight-owned traces with `tracestate: lamplight=true`; user-provided
+`traceparent` and `tracestate` headers are removed before injection so the
+execution ID is authoritative. The system under test must propagate that
+context and export spans using the same trace ID.
 
 All span checks in one step share a single poller lifecycle. Direct adapters
 normalize provider responses into `model.Span`; collector-backed providers

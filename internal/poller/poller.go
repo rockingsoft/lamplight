@@ -57,6 +57,8 @@ type CheckProgress struct {
 	Name       string
 	MatchCount int
 	Status     model.Status
+	Reason     string
+	Rule       model.QuantityRule
 }
 
 // Result records the terminal state for all checks and the last observation.
@@ -170,6 +172,8 @@ func checkProgress(states []checkState) []CheckProgress {
 		progress[index] = CheckProgress{Name: state.check.Name, Status: state.result.Status}
 		if state.result.SpanEvidence != nil {
 			progress[index].MatchCount = state.result.SpanEvidence.MatchCount
+			progress[index].Reason = state.result.Reason
+			progress[index].Rule = state.result.SpanEvidence.Rule
 		}
 	}
 	return progress

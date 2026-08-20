@@ -72,7 +72,7 @@ func TestPrettyMarkersCoverStatusesAndColorModes(t *testing.T) {
 	}
 }
 
-func TestPrettyRendererMakesErrorsExplicitAndActionable(t *testing.T) {
+func TestPrettyRendererKeepsErrorSummaryCompactAndRedacted(t *testing.T) {
 	run := model.RunResult{
 		RunID: "run", Status: model.StatusError, StartedAt: time.Date(2026, 8, 20, 12, 0, 0, 0, time.UTC),
 		Summary: model.RunSummary{Errors: 1},
@@ -91,13 +91,7 @@ func TestPrettyRendererMakesErrorsExplicitAndActionable(t *testing.T) {
 		t.Fatal(err)
 	}
 	text := string(output)
-	for _, expected := range []string{
-		"Error: Lamplight could not connect to the trace datasource.",
-		"Details: lookup [REDACTED]: no such host",
-		"Docker service names only resolve inside their Docker network",
-		"Error: The test's HTTP request could not be completed.",
-		"Make sure the target service is running",
-	} {
+	for _, expected := range []string{"ERROR · 1 errors", "Tests", "! run"} {
 		if !strings.Contains(text, expected) {
 			t.Errorf("pretty output missing %q:\n%s", expected, text)
 		}
@@ -133,7 +127,7 @@ func TestFriendlyDiagnosticExplainsUnavailableKafkaBroker(t *testing.T) {
 	}
 }
 
-func TestPrettyRendererShowsEveryCheckInCancelledStepAsCancelled(t *testing.T) {
+func TestPrettyRendererShowsCancelledTestInCompactSummary(t *testing.T) {
 	run := model.RunResult{
 		RunID: "run", Status: model.StatusCancelled, StartedAt: time.Date(2026, 8, 20, 12, 0, 0, 0, time.UTC),
 		Summary: model.RunSummary{Errors: 1},
@@ -154,23 +148,20 @@ func TestPrettyRendererShowsEveryCheckInCancelledStepAsCancelled(t *testing.T) {
 		t.Fatal(err)
 	}
 	text := string(output)
-	for _, expected := range []string{
-		"■ already passed — completed before cancellation",
-		"■ still pending — cancelled",
-	} {
+	for _, expected := range []string{"CANCELLED", "Tests", "■ cancelled test"} {
 		if !strings.Contains(text, expected) {
 			t.Errorf("pretty output missing %q:\n%s", expected, text)
 		}
 	}
-	if strings.Contains(text, "✓ already passed") {
-		t.Fatalf("cancelled step rendered a green passed check:\n%s", text)
+	if strings.Contains(text, "already passed") || strings.Contains(text, "still pending") {
+		t.Fatalf("compact summary should not include check details:\n%s", text)
 	}
 	colored, err := NewPrettyRenderer(true).Render(run)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(string(colored), NewPrettyRenderer(true).statusMarker(model.StatusCancelled)+" already passed") {
-		t.Fatalf("cancelled check did not use the warning-colored marker: %q", colored)
+	if !strings.Contains(string(colored), NewPrettyRenderer(true).statusMarker(model.StatusCancelled)+" cancelled test") {
+		t.Fatalf("cancelled test did not use the warning-colored marker: %q", colored)
 	}
 }
 

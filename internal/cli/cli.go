@@ -20,6 +20,7 @@ import (
 	"lamplight/internal/debuglog"
 	"lamplight/internal/engine"
 	"lamplight/internal/expr"
+	"lamplight/internal/formatcmd"
 	"lamplight/internal/hclloader"
 	"lamplight/internal/httpstep"
 	"lamplight/internal/initcmd"
@@ -84,6 +85,8 @@ func Main(ctx context.Context, args []string, streams IO) int {
 		return 0
 	case "validate":
 		return validate(ctx, args[1:], streams)
+	case "fmt":
+		return formatTests(args[1:], streams)
 	case "list":
 		if len(args) < 2 || args[1] != "tests" {
 			usage(streams.Err)
@@ -100,6 +103,23 @@ func Main(ctx context.Context, args []string, streams IO) int {
 		usage(streams.Err)
 		return 1
 	}
+}
+
+func formatTests(args []string, streams IO) int {
+	fs := flag.NewFlagSet("fmt", flag.ContinueOnError)
+	fs.SetOutput(streams.Err)
+	working := fs.String("working-dir", "", "working directory")
+	fs.StringVar(working, "w", "", "working directory")
+	if fs.Parse(args) != nil {
+		return 1
+	}
+	changed, err := formatcmd.Run(*working, fs.Args())
+	if err != nil {
+		writeLine(streams.Err, "error:", err)
+		return 1
+	}
+	writef(streams.Out, "Formatted %d files\n", changed)
+	return 0
 }
 
 func extractVerbose(args []string) ([]string, bool) {
@@ -364,9 +384,34 @@ func run(ctx context.Context, args []string, streams IO) int {
 		runtimeProject.Datasource = store
 	}
 	redactor := result.NewRedactor(sensitiveStrings(values)...)
-	progress := newRunProgress(streams.Err, redactor)
+	format := render.Format(def.Output)
+	if *output != "" {
+		format = render.Format(*output)
+	}
+	var renderer model.Renderer
+	if format == render.FormatPretty {
+		if isCIEnvironment(os.Getenv) {
+			renderer = render.NewPrettyRenderer(false, redactor)
+		} else {
+			renderer = render.NewAutoPrettyRenderer(streams.Out, redactor)
+		}
+	} else {
+		renderer, err = render.New(format, redactor)
+	}
+	if err != nil {
+		writeLine(streams.Err, "error:", err)
+		return 1
+	}
+	var progressFunc engine.ProgressFunc
+	if format == render.FormatPretty {
+		if isCIEnvironment(os.Getenv) {
+			progressFunc = newCIRunProgress(streams.Err, redactor).Report
+		} else {
+			progressFunc = newRunProgress(streams.Err, redactor).Report
+		}
+	}
 	httpExecutor := httpstep.New(nil)
-	eng := engine.Engine{HTTP: httpExecutor, Triggers: triggerexecutor.New(httpExecutor), TraceFactory: tracecontext.NewFactory(), FailFast: *failFast, Progress: progress.Report}
+	eng := engine.Engine{HTTP: httpExecutor, Triggers: triggerexecutor.New(httpExecutor), TraceFactory: tracecontext.NewFactory(), FailFast: *failFast, Progress: progressFunc}
 	runResult := eng.Run(ctx, runtimeProject)
 	debuglog.Debug(ctx, "test run completed", "run_id", runResult.RunID, "status", runResult.Status, "tests", len(runResult.Tests))
 	store, err := artifact.NewStore(*artifactsDir, redactor)
@@ -380,29 +425,12 @@ func run(ctx context.Context, args []string, streams IO) int {
 		return 1
 	}
 	runResult.Artifacts = refs
-	format := def.Output
-	if *output != "" {
-		format = *output
-	}
-	var renderer model.Renderer
-	if render.Format(format) == render.FormatPretty {
-		renderer = render.NewAutoPrettyRenderer(streams.Out, redactor)
-	} else {
-		renderer, err = render.New(render.Format(format), redactor)
-	}
-	if err != nil {
-		writeLine(streams.Err, "error:", err)
-		return 1
-	}
 	encoded, err := renderer.Render(runResult)
 	if err != nil {
 		writeLine(streams.Err, "error: render:", err)
 		return 1
 	}
 	_, _ = streams.Out.Write(encoded)
-	for _, ref := range refs {
-		writeLine(streams.Err, "artifacts:", ref.Path)
-	}
 	return result.ExitCode(runResult)
 }
 
@@ -542,6 +570,7 @@ Usage:
 
 Commands:
   init                 Create a new Lamplight project
+  fmt                  Format Lamplight test files
   validate             Validate the project without running tests
   list tests           List discovered tests
   run [TEST_NAME]      Run all tests or one named test
@@ -594,6 +623,15 @@ func handleHelp(args []string, streams IO) (bool, int) {
 func printCommandHelp(w io.Writer, path []string) bool {
 	topic := strings.Join(path, " ")
 	help := map[string]string{
+		"fmt": `Format Lamplight test files using the canonical, non-configurable style.
+
+Usage:
+  lamplight fmt [options] [FILE_OR_DIR ...]
+
+Options:
+  -w, --working-dir DIR  Working directory (default: current directory)
+  -h, --help             Show this help
+`,
 		"init": `Create a new Lamplight project.
 
 Usage:

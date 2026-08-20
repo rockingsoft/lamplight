@@ -56,6 +56,37 @@ func TestPrettyColorIsOptIn(t *testing.T) {
 	}
 }
 
+func TestPrettyRendererListsEveryTestWithoutCheckDetails(t *testing.T) {
+	run := model.RunResult{
+		RunID: "run", Status: model.StatusFailed, DurationMS: 62_713,
+		Summary: model.RunSummary{TestsTotal: 3, TestsPassed: 1, TestsFailed: 2},
+		Tests: []model.TestResult{
+			{Name: "import", Status: model.StatusFailed, DurationMS: 60_639, Steps: []model.StepResult{
+				{Name: "request", Status: model.StatusFailed, Checks: []model.CheckResult{
+					{Name: "request validated", Status: model.StatusFailed, Reason: "span_assertion_failed", SpanEvidence: &model.SpanEvidence{Assertions: []model.AssertionEvidence{{Name: "valid", Passed: false}}}},
+					{Name: "PokeAPI called", Status: model.StatusFailed, Reason: "count_not_satisfied", SpanEvidence: &model.SpanEvidence{Rule: model.QuantityRule{Kind: "at_least", Value: 1}, MatchCount: 0}},
+					{Name: "message enqueued", Status: model.StatusPassed},
+				}},
+			}},
+			{Name: "list", Status: model.StatusPassed, DurationMS: 1_041},
+		},
+	}
+
+	output, err := NewPrettyRenderer(false).Render(run)
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(output)
+	for _, expected := range []string{"FAILED · 1 passed · 2 failed · 1m2.713s", "Tests", "✗ import · 1m0.639s", "✓ list · 1.041s"} {
+		if !strings.Contains(text, expected) {
+			t.Errorf("pretty output missing %q:\n%s", expected, text)
+		}
+	}
+	if strings.Contains(text, "message enqueued") || strings.Contains(text, "request validated") {
+		t.Fatalf("test summary should not include check details:\n%s", text)
+	}
+}
+
 func renderRun() model.RunResult {
 	return model.RunResult{
 		SchemaVersion: 1, RunID: "run", Status: model.StatusFailed,

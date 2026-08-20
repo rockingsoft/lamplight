@@ -242,7 +242,7 @@ func (e *Engine) runStep(ctx context.Context, project *model.Project, step model
 		polled, err := poller.Poll(ctx, project.Datasource, trace.TraceID, poller.Config{ObservationWindow: window, SettleWindow: settle, Interval: interval, Clock: e.Clock, Progress: func(progress poller.Progress) {
 			checks := make([]ProgressCheck, len(progress.Checks))
 			for index, check := range progress.Checks {
-				checks[index] = ProgressCheck{Name: check.Name, MatchCount: check.MatchCount, Status: check.Status}
+				checks[index] = ProgressCheck{Name: check.Name, MatchCount: check.MatchCount, Status: check.Status, Reason: check.Reason, Rule: check.Rule}
 			}
 			e.progress(ProgressEvent{Kind: ProgressTraceObserved, StepName: step.Name, Attempt: progress.Attempt, SpanCount: progress.SpanCount, Found: progress.Found, Complete: progress.Complete, RetryError: progress.RetryError, Checks: checks})
 		}}, spanChecks)
@@ -350,10 +350,27 @@ func spanMatcher(check model.CheckDefinition, response model.Response, variables
 		}
 		value, diags := expr.Evaluate(check.Spans.Matching, ctx)
 		if diags.HasErrors() {
+			if onlyMissingIndexErrors(diags) {
+				return false, nil
+			}
 			return false, fmt.Errorf("span predicate: %s", diags.Error())
 		}
 		return expr.RequireBool(value)
 	}
+}
+
+func onlyMissingIndexErrors(diags hcl.Diagnostics) bool {
+	found := false
+	for _, diagnostic := range diags {
+		if diagnostic.Severity != hcl.DiagError {
+			continue
+		}
+		found = true
+		if diagnostic.Summary != "Invalid index" {
+			return false
+		}
+	}
+	return found
 }
 
 func spanAssertions(check model.CheckDefinition, response model.Response, variables map[string]model.SensitiveValue, steps cty.Value) []poller.SpanAssertion {

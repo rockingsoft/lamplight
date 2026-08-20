@@ -346,6 +346,18 @@ func TestSpanMatcherAndCheckMerging(t *testing.T) {
 	if _, err := spanMatcher(bad, model.Response{}, nil, cty.EmptyObjectVal)(model.Span{}); err == nil {
 		t.Fatal("expected span predicate error")
 	}
+	attributeCheck := model.CheckDefinition{Name: "attributes", Spans: &model.SpanCheckDefinition{
+		Matching:   parseExpr(t, `span.attributes["http.method"] == "GET"`),
+		Assertions: map[string]hcl.Expression{"method": parseExpr(t, `span.attributes["http.method"] == "GET"`)},
+	}}
+	matched, err = spanMatcher(attributeCheck, model.Response{}, nil, cty.EmptyObjectVal)(model.Span{Attributes: map[string]any{"db.system": "postgres"}})
+	if err != nil || matched {
+		t.Fatalf("missing selector attribute must be a non-match: matched=%t err=%v", matched, err)
+	}
+	attributeAssertions := spanAssertions(attributeCheck, model.Response{}, nil, cty.EmptyObjectVal)
+	if _, err := attributeAssertions[0].Evaluate(model.Span{Attributes: map[string]any{"db.system": "postgres"}}); err == nil {
+		t.Fatal("missing assertion attribute must remain an error")
+	}
 	checks := []model.CheckResult{{Name: "span", Status: model.StatusPassed, ResponseEvidence: []model.AssertionEvidence{{Name: "response"}}}}
 	mergeCheck(&checks, model.CheckResult{Name: "span", Status: model.StatusFailed, Reason: "count"})
 	if checks[0].Status != model.StatusFailed || len(checks[0].ResponseEvidence) != 1 {

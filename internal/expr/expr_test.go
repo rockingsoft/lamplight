@@ -123,3 +123,29 @@ func TestRequireBoolAndValueConversionErrors(t *testing.T) {
 		t.Fatal("valueFromAny() did not decode JSON")
 	}
 }
+
+func TestSpanValueProvidesLegacySemanticSpanType(t *testing.T) {
+	for _, test := range []struct {
+		attribute string
+		want      string
+	}{
+		{attribute: "http.method", want: "http"},
+		{attribute: "db.system", want: "database"},
+		{attribute: "messaging.system", want: "messaging"},
+		{attribute: "rpc.system", want: "rpc"},
+		{want: "general"},
+	} {
+		attributes := map[string]any{}
+		if test.attribute != "" {
+			attributes[test.attribute] = "value"
+		}
+		span := model.Span{Attributes: attributes}
+		got := SpanValue(span).GetAttr("attributes").GetAttr("tracetest.span.type").AsString()
+		if got != test.want {
+			t.Errorf("attribute %q type=%q want %q", test.attribute, got, test.want)
+		}
+		if _, mutated := attributes["tracetest.span.type"]; mutated {
+			t.Fatal("SpanValue mutated the source attributes")
+		}
+	}
+}

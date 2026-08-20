@@ -142,12 +142,20 @@ Migrate legacy Tracetest YAML tests into a new Lamplight project:
 ```sh
 ./lamplight migrate tracetest ./tracetest-tests --output-dir ./migrated
 ./lamplight validate --working-dir ./migrated
+./lamplight fmt --working-dir ./migrated
 ```
 
 The migrator supports Tracetest HTTP and Kafka tests plus compatible datastore
 provisioning, reports one styled processed or ignored status per input file,
 and fails explicitly on constructs that cannot be represented safely. See the
 CLI reference for the conversion contract.
+
+Format every `.wick` test below the current directory with Lamplight's fixed,
+canonical style (including readable wrapping for long `&&` chains):
+
+```sh
+./lamplight fmt
+```
 
 Run all tests, one test, or a tag:
 

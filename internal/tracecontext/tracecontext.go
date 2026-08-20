@@ -13,8 +13,9 @@ import (
 )
 
 const (
-	traceParentHeader = "traceparent"
-	traceStateHeader  = "tracestate"
+	traceParentHeader   = "traceparent"
+	traceStateHeader    = "tracestate"
+	lamplightTraceState = "lamplight=true"
 )
 
 // Factory produces independent, sampled W3C trace contexts.
@@ -34,7 +35,7 @@ func (Factory) New() (model.TestTraceContext, error) {
 	if err != nil {
 		return model.TestTraceContext{}, err
 	}
-	return model.TestTraceContext{TraceID: model.TraceID(traceID), SpanID: spanID, TraceFlags: 1}, nil
+	return model.TestTraceContext{TraceID: model.TraceID(traceID), SpanID: spanID, TraceFlags: 1, TraceState: lamplightTraceState}, nil
 }
 
 func randomHex(size int) (string, error) {

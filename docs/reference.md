@@ -323,8 +323,9 @@ Properties:
 
 Before sending, Lamplight removes user-provided `traceparent` and `tracestate`
 headers case-insensitively. If a datasource is configured, it injects the
-step's generated W3C context. Users cannot replace the generated correlation
-context.
+step's generated W3C context, including `tracestate: lamplight=true`. This lets
+collectors retain only Lamplight-owned traces when desired. Users cannot
+replace the generated correlation context.
 
 HTTP status codes, including 4xx and 5xx, are valid responses. Technical errors
 include invalid URLs, transport failures, timeouts, body limits, unsupported
@@ -585,7 +586,20 @@ Creates:
 
 It refuses to overwrite either generated file. There is no empty-init mode.
 
-### 13.2 `lamplight validate`
+### 13.2 `lamplight fmt`
+
+```text
+lamplight fmt [-w DIR] [FILE_OR_DIR ...]
+```
+
+Formats every `.wick` file below the working directory, or only the supplied
+files and directories. The style is deterministic and non-configurable. Long
+logical `&&` chains are parenthesized and split one condition per line. All
+function calls longer than 50 columns are split with one argument per line.
+All files are parsed before any are written, so a syntax error cannot leave a
+project partially formatted.
+
+### 13.3 `lamplight validate`
 
 ```text
 lamplight validate [-c FILE] [-w DIR]
@@ -596,7 +610,7 @@ checking, identifier validation, reference checking, and static expression
 validation. It does not resolve required runtime values, send HTTP requests, or
 connect to Tempo.
 
-### 13.3 `lamplight list tests`
+### 13.4 `lamplight list tests`
 
 ```text
 lamplight list tests [-c FILE] [-w DIR]
@@ -605,7 +619,7 @@ lamplight list tests [-c FILE] [-w DIR]
 Prints the test name, comma-separated tags, source file, and whether the test
 contains span checks.
 
-### 13.4 `lamplight run`
+### 13.5 `lamplight run`
 
 ```text
 lamplight run [OPTIONS] [TEST_NAME]
@@ -638,7 +652,7 @@ redirected stderr the same transitions are emitted as append-only lines. The
 final selected output format is written to stdout, so JSON and text output
 remain machine-readable.
 
-### 13.5 `lamplight migrate tracetest`
+### 13.6 `lamplight migrate tracetest`
 
 ```text
 lamplight migrate tracetest [--output-dir DIR] [-f|--force] INPUT

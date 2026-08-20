@@ -23,6 +23,10 @@ type runProgress struct {
 	width     int
 	mu        sync.Mutex
 	spinner   *progressSpinner
+	lineCount int
+	testLine  int
+	stepLine  int
+	dsLine    int
 }
 
 type progressSpinner struct {
@@ -41,30 +45,30 @@ func newRunProgress(writer io.Writer, redactor result.Redactor) *runProgress {
 			width = columns
 		}
 	}
-	return &runProgress{writer: writer, formatter: render.NewAutoPrettyFormatter(writer), redactor: redactor, terminal: terminal, width: width}
+	return &runProgress{writer: writer, formatter: render.NewAutoPrettyFormatter(writer), redactor: redactor, terminal: terminal, width: width, testLine: -1, stepLine: -1, dsLine: -1}
 }
 
 func (p *runProgress) Report(event engine.ProgressEvent) {
 	switch event.Kind {
 	case engine.ProgressRunStarted:
-		writef(p.writer, "%s Running %d %s...\n", p.formatter.Accent("→"), event.TestsTotal, plural(event.TestsTotal, "test", "tests"))
+		p.writeLine("%s Running %d %s...", p.formatter.Accent("→"), event.TestsTotal, plural(event.TestsTotal, "test", "tests"))
 	case engine.ProgressDatasourceStarted:
-		writef(p.writer, "%s Checking trace datasource connection...\n", p.formatter.Accent("→"))
+		p.dsLine = p.writeLine("%s Checking trace datasource connection...", p.formatter.Accent("→"))
 	case engine.ProgressDatasourceCompleted:
 		if event.Status == model.StatusPassed {
-			writef(p.writer, "%s Trace datasource connected\n", p.formatter.Success("✓"))
+			p.replaceLine(p.dsLine, "%s Trace datasource connected", p.formatter.Success("✓"))
 		} else {
-			writef(p.writer, "%s Trace datasource connection failed\n", p.formatter.Failure("!"))
+			p.replaceLine(p.dsLine, "%s Trace datasource connection failed", p.formatter.Failure("!"))
 		}
 	case engine.ProgressTestStarted:
-		writef(p.writer, "%s Test: %s\n", p.formatter.Accent("→"), p.redactor.RedactString(event.TestName))
+		p.testLine = p.writeLine("%s Test: %s", p.formatter.Accent("→"), p.redactor.RedactString(event.TestName))
 	case engine.ProgressTestCompleted:
-		writef(p.writer, "%s Test: %s %s\n", p.formatter.StatusMarker(event.Status), p.redactor.RedactString(event.TestName), p.formatter.Muted(fmt.Sprintf("· %d ms", event.DurationMS)))
+		p.replaceLine(p.testLine, "%s Test: %s %s", p.formatter.StatusMarker(event.Status), p.redactor.RedactString(event.TestName), p.formatter.Muted(fmt.Sprintf("· %d ms", event.DurationMS)))
 	case engine.ProgressStepStarted:
-		writef(p.writer, "  %s Step: %s\n", p.formatter.Accent("→"), p.redactor.RedactString(event.StepName))
+		p.stepLine = p.writeLine("  %s Step: %s", p.formatter.Accent("→"), p.redactor.RedactString(event.StepName))
 	case engine.ProgressStepCompleted:
 		p.finishSpinner(p.formatter.StatusMarker(event.Status), p.currentSpinnerText())
-		writef(p.writer, "  %s Step: %s %s\n", p.formatter.StatusMarker(event.Status), p.redactor.RedactString(event.StepName), p.formatter.Muted(fmt.Sprintf("· %d ms", event.DurationMS)))
+		p.replaceLine(p.stepLine, "  %s Step: %s %s", p.formatter.StatusMarker(event.Status), p.redactor.RedactString(event.StepName), p.formatter.Muted(fmt.Sprintf("· %d ms", event.DurationMS)))
 	case engine.ProgressTriggerStarted:
 		p.startSpinner("    ", fmt.Sprintf("Running %s trigger...", triggerLabel(event.Trigger)))
 	case engine.ProgressTriggerCompleted:
@@ -80,10 +84,71 @@ func (p *runProgress) Report(event engine.ProgressEvent) {
 		text := p.traceProgressText(event)
 		if status, terminal := terminalCheckStatus(event.Checks); terminal {
 			p.finishSpinner(p.formatter.StatusMarker(status), text)
+			p.writeFailedChecks(event.Checks)
 		} else {
 			p.updateSpinner(text)
 		}
 	}
+}
+
+func (p *runProgress) writeFailedChecks(checks []engine.ProgressCheck) {
+	for _, check := range checks {
+		if check.Status != model.StatusFailed && check.Status != model.StatusError {
+			continue
+		}
+		detail := friendlyProgressReason(check)
+		p.writeLine("      %s %s", p.formatter.StatusMarker(check.Status), p.redactor.RedactString(check.Name))
+		if detail != "" {
+			p.writeLine("        %s", p.redactor.RedactString(detail))
+		}
+	}
+}
+
+func friendlyProgressReason(check engine.ProgressCheck) string {
+	switch check.Reason {
+	case "span_assertion_failed":
+		return "A matching span did not satisfy the assertion."
+	case "count_not_satisfied":
+		return fmt.Sprintf("Expected %s %d matching spans; found %d.", quantityWords(check.Rule.Kind), check.Rule.Value, check.MatchCount)
+	case "trace_not_observed":
+		return "No matching trace was observed before the timeout."
+	case "":
+		return ""
+	default:
+		return strings.ReplaceAll(check.Reason, "_", " ") + "."
+	}
+}
+
+func quantityWords(kind string) string {
+	switch kind {
+	case "at_least":
+		return "at least"
+	case "at_most":
+		return "at most"
+	case "exactly":
+		return "exactly"
+	default:
+		return kind
+	}
+}
+
+func (p *runProgress) writeLine(format string, args ...any) int {
+	line := p.lineCount
+	writef(p.writer, format+"\n", args...)
+	p.lineCount++
+	return line
+}
+
+func (p *runProgress) replaceLine(line int, format string, args ...any) {
+	if !p.terminal || line < 0 || line >= p.lineCount {
+		p.writeLine(format, args...)
+		return
+	}
+	distance := p.lineCount - line
+	value := fmt.Sprintf(format, args...)
+	p.mu.Lock()
+	_, _ = fmt.Fprintf(p.writer, "\x1b[%dA\r\x1b[2K%s\x1b[%dB\r", distance, value, distance)
+	p.mu.Unlock()
 }
 
 func (p *runProgress) traceProgressText(event engine.ProgressEvent) string {
@@ -97,7 +162,11 @@ func (p *runProgress) traceProgressText(event engine.ProgressEvent) string {
 			completed++
 		}
 	}
-	return fmt.Sprintf("Polling trace · attempt %d · %d %s received · %d %s matching · %d/%d checks ready", event.Attempt, event.SpanCount, plural(event.SpanCount, "span", "spans"), matches, plural(matches, "span", "spans"), completed, len(event.Checks))
+	label := "Waiting for trace"
+	if _, terminal := terminalCheckStatus(event.Checks); terminal {
+		label = "Trace checks"
+	}
+	return fmt.Sprintf("%s · %d/%d ready · %d %s received · attempt %d", label, completed, len(event.Checks), event.SpanCount, plural(event.SpanCount, "span", "spans"), event.Attempt)
 }
 
 func terminalCheckStatus(checks []engine.ProgressCheck) (model.Status, bool) {
@@ -206,7 +275,7 @@ func (p *runProgress) finishSpinner(marker, value string) {
 		p.mu.Unlock()
 	}
 	if value != "" {
-		writef(p.writer, "%s%s %s\n", spinner.indent, marker, value)
+		p.writeLine("%s%s %s", spinner.indent, marker, value)
 	}
 }
 

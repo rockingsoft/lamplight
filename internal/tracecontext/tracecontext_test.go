@@ -19,6 +19,9 @@ func TestFactoryCreatesValidDistinctContexts(t *testing.T) {
 	if first.TraceID == second.TraceID || len(first.TraceID) != 32 || len(first.SpanID) != 16 {
 		t.Fatalf("invalid contexts: %#v %#v", first, second)
 	}
+	if first.TraceState != "lamplight=true" || second.TraceState != "lamplight=true" {
+		t.Fatalf("missing Lamplight tracestate: %#v %#v", first, second)
+	}
 	parsed, err := ParseTraceParent(first.TraceParent())
 	if err != nil || parsed.TraceID != first.TraceID || parsed.SpanID != first.SpanID {
 		t.Fatalf("parse: %#v, %v", parsed, err)
@@ -33,7 +36,7 @@ func TestInjectReplacesUserPropagation(t *testing.T) {
 	if got := headers.Get("traceparent"); got != trace.TraceParent() {
 		t.Fatalf("traceparent = %q", got)
 	}
-	if headers.Get("tracestate") != "" || strings.Contains(headers.Get("traceparent"), "user") {
+	if headers.Get("tracestate") != "lamplight=true" || strings.Contains(headers.Get("traceparent"), "user") {
 		t.Fatal("untrusted propagation survived")
 	}
 }

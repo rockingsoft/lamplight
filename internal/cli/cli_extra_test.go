@@ -277,7 +277,7 @@ func TestRunReportsSelectionAndVariableErrors(t *testing.T) {
 	}
 }
 
-func TestRunContinuesByDefaultReportsProgressAndSupportsFailFast(t *testing.T) {
+func TestRunContinuesByDefaultAndSupportsFailFastWithCleanJSON(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, _ *http.Request) {
 		writer.Header().Set("Content-Type", "application/json")
 		writer.WriteHeader(http.StatusOK)
@@ -324,10 +324,8 @@ func TestRunContinuesByDefaultReportsProgressAndSupportsFailFast(t *testing.T) {
 			if len(run.Tests) != 2 || run.Tests[0].Status != model.StatusError || run.Tests[1].Status != test.wantSecond {
 				t.Fatalf("tests=%#v\nstdout=%s\nstderr=%s", run.Tests, stdout.String(), stderr.String())
 			}
-			for _, expected := range []string{"Running 2 tests", "Test: first", "Step: request"} {
-				if !strings.Contains(stderr.String(), expected) {
-					t.Errorf("progress missing %q: %s", expected, stderr.String())
-				}
+			if stderr.Len() != 0 {
+				t.Errorf("JSON output must not include pretty progress on stderr: %q", stderr.String())
 			}
 		})
 	}
@@ -350,7 +348,24 @@ func TestRunProgressShowsTriggerResultAndSpanMatches(t *testing.T) {
 	progress.Report(engine.ProgressEvent{Kind: engine.ProgressTracePolling, ObservationWindow: time.Minute})
 	progress.Report(engine.ProgressEvent{Kind: engine.ProgressTraceObserved, Attempt: 2, SpanCount: 4, Checks: []engine.ProgressCheck{{Name: "created", MatchCount: 1, Status: model.StatusPassed}}})
 	text := output.String()
-	for _, expected := range []string{"Running http trigger", "HTTP trigger succeeded · HTTP 201 · 12 ms", "attempt 2", "4 spans received", "1 span matching", "1/1 checks ready"} {
+	for _, expected := range []string{"Running http trigger", "HTTP trigger succeeded · HTTP 201 · 12 ms", "Trace checks", "attempt 2", "4 spans received", "1/1 ready"} {
+		if !strings.Contains(text, expected) {
+			t.Errorf("progress missing %q: %s", expected, text)
+		}
+	}
+}
+
+func TestRunProgressShowsFailureDetailsNextToTraceResult(t *testing.T) {
+	var output bytes.Buffer
+	progress := newRunProgress(&output, result.NewRedactor())
+	progress.Report(engine.ProgressEvent{Kind: engine.ProgressTracePolling, ObservationWindow: time.Minute})
+	progress.Report(engine.ProgressEvent{Kind: engine.ProgressTraceObserved, Attempt: 2, SpanCount: 3, Checks: []engine.ProgressCheck{
+		{Name: "request valid", MatchCount: 1, Status: model.StatusFailed, Reason: "span_assertion_failed"},
+		{Name: "worker called", MatchCount: 0, Status: model.StatusFailed, Reason: "count_not_satisfied", Rule: model.QuantityRule{Kind: "at_least", Value: 1}},
+	}})
+
+	text := output.String()
+	for _, expected := range []string{"Trace checks", "request valid", "did not satisfy the assertion", "worker called", "Expected at least 1 matching spans; found 0"} {
 		if !strings.Contains(text, expected) {
 			t.Errorf("progress missing %q: %s", expected, text)
 		}
@@ -367,6 +382,26 @@ func TestRunProgressSpinnerUpdatesAndFinishesInTerminalMode(t *testing.T) {
 	text := output.String()
 	if !strings.Contains(text, "\x1b[2K") || !strings.Contains(text, "HTTP trigger failed") {
 		t.Fatalf("spinner output=%q", text)
+	}
+}
+
+func TestRunProgressReplacesTestAndStepStatusInTerminalMode(t *testing.T) {
+	var output bytes.Buffer
+	progress := newRunProgress(&output, result.NewRedactor())
+	progress.terminal = true
+	progress.Report(engine.ProgressEvent{Kind: engine.ProgressTestStarted, TestName: "checkout"})
+	progress.Report(engine.ProgressEvent{Kind: engine.ProgressStepStarted, StepName: "request"})
+	progress.Report(engine.ProgressEvent{Kind: engine.ProgressStepCompleted, StepName: "request", Status: model.StatusPassed, DurationMS: 12})
+	progress.Report(engine.ProgressEvent{Kind: engine.ProgressTestCompleted, TestName: "checkout", Status: model.StatusFailed, DurationMS: 15})
+
+	text := output.String()
+	if strings.Count(text, "Test: checkout") != 2 || strings.Count(text, "Step: request") != 2 {
+		t.Fatalf("status rows should be rewritten, not appended: %q", text)
+	}
+	for _, expected := range []string{"\x1b[1A", "\x1b[2A", "✓ Step: request", "✗ Test: checkout"} {
+		if !strings.Contains(text, expected) {
+			t.Errorf("terminal update missing %q: %q", expected, text)
+		}
 	}
 }
 

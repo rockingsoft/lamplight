@@ -31,6 +31,8 @@ type ProgressCheck struct {
 	Name       string
 	MatchCount int
 	Status     model.Status
+	Reason     string
+	Rule       model.QuantityRule
 }
 
 type ProgressEventKind string

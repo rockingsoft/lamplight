@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"strings"
+	"time"
 
 	"github.com/muesli/termenv"
 	"lamplight/internal/model"
@@ -138,56 +139,39 @@ func NewAutoPrettyRenderer(writer io.Writer, redactors ...result.Redactor) *Pret
 func (r *PrettyRenderer) Render(run model.RunResult) ([]byte, error) {
 	var output bytes.Buffer
 	formatter := NewPrettyFormatter(&output, r.Color)
-	fmt.Fprintf(&output, "%s %s (%s)\n", formatter.StatusMarker(run.Status), formatter.StatusLabel(run.Status), r.Redactor.RedactString(run.RunID))
-	fmt.Fprintf(&output, "Started %s · %d ms · %d passed, %d failed, %d errors\n", run.StartedAt.Format("2006-01-02 15:04:05Z07:00"), run.DurationMS, run.Summary.TestsPassed, run.Summary.TestsFailed, run.Summary.Errors)
-	for _, test := range run.Tests {
-		fmt.Fprintf(&output, "%s %s", formatter.StatusMarker(test.Status), r.Redactor.RedactString(test.Name))
-		if len(test.Tags) > 0 {
-			fmt.Fprintf(&output, " [%s]", strings.Join(redactStrings(r.Redactor, test.Tags), ", "))
-		}
-		fmt.Fprintf(&output, " · %d ms\n", test.DurationMS)
-		r.writePrettyDiagnostic(&output, formatter, "  ", test.Error)
-		for _, step := range test.Steps {
-			fmt.Fprintf(&output, "  %s %s · %d ms\n", formatter.StatusMarker(step.Status), r.Redactor.RedactString(step.Name), step.DurationMS)
-			r.writePrettyDiagnostic(&output, formatter, "    ", step.Error)
-			for _, check := range step.Checks {
-				status, reason := prettyCheckState(step.Status, check)
-				fmt.Fprintf(&output, "    %s %s", formatter.StatusMarker(status), r.Redactor.RedactString(check.Name))
-				if reason != "" {
-					fmt.Fprintf(&output, " — %s", r.Redactor.RedactString(reason))
-				}
-				output.WriteByte('\n')
-			}
+	fmt.Fprintf(&output, "\n%s %s", formatter.StatusMarker(run.Status), formatter.StatusLabel(run.Status))
+	if run.Summary.TestsPassed > 0 {
+		fmt.Fprintf(&output, " · %d passed", run.Summary.TestsPassed)
+	}
+	if run.Summary.TestsFailed > 0 {
+		fmt.Fprintf(&output, " · %d failed", run.Summary.TestsFailed)
+	}
+	if run.Summary.Errors > 0 {
+		fmt.Fprintf(&output, " · %d errors", run.Summary.Errors)
+	}
+	fmt.Fprintf(&output, " · %s\n", prettyDuration(run.DurationMS))
+
+	if len(run.Tests) > 0 {
+		output.WriteString("\nTests\n")
+		for _, test := range run.Tests {
+			fmt.Fprintf(&output, "%s %s %s\n", formatter.StatusMarker(test.Status), r.Redactor.RedactString(test.Name), formatter.Muted("· "+prettyDuration(test.DurationMS)))
 		}
 	}
 	if len(run.Artifacts) > 0 {
+		output.WriteByte('\n')
 		for _, artifact := range run.Artifacts {
-			fmt.Fprintf(&output, "Artifacts: %s\n", r.Redactor.RedactString(artifact.Path))
+			fmt.Fprintf(&output, "%s %s\n", formatter.Muted("Artifacts:"), r.Redactor.RedactString(artifact.Path))
 		}
 	}
 	return output.Bytes(), nil
 }
 
-func prettyCheckState(stepStatus model.Status, check model.CheckResult) (model.Status, string) {
-	if stepStatus != model.StatusCancelled {
-		return check.Status, check.Reason
+func prettyDuration(milliseconds int64) string {
+	duration := time.Duration(milliseconds) * time.Millisecond
+	if duration >= time.Second {
+		return duration.Round(time.Millisecond).String()
 	}
-	if check.Status == model.StatusPassed {
-		return model.StatusCancelled, "completed before cancellation"
-	}
-	return model.StatusCancelled, "cancelled"
-}
-
-func (r *PrettyRenderer) writePrettyDiagnostic(output *bytes.Buffer, formatter PrettyFormatter, indent string, diagnostic *model.Diagnostic) {
-	if diagnostic == nil {
-		return
-	}
-	summary, suggestion := friendlyDiagnostic(diagnostic)
-	fmt.Fprintf(output, "%s%s %s\n", indent, formatter.Failure("Error:"), r.Redactor.RedactString(summary))
-	fmt.Fprintf(output, "%s%s %s\n", indent, formatter.Muted("Details:"), r.Redactor.RedactString(diagnostic.Message))
-	if suggestion != "" {
-		fmt.Fprintf(output, "%s%s %s\n", indent, formatter.Accent("Try:"), r.Redactor.RedactString(suggestion))
-	}
+	return fmt.Sprintf("%dms", milliseconds)
 }
 
 func friendlyDiagnostic(diagnostic *model.Diagnostic) (string, string) {

@@ -117,11 +117,34 @@ func ResponseValue(response model.Response) cty.Value {
 }
 
 func SpanValue(span model.Span) cty.Value {
+	attributes := make(map[string]any, len(span.Attributes)+1)
+	for name, value := range span.Attributes {
+		attributes[name] = value
+	}
+	if _, exists := attributes["tracetest.span.type"]; !exists {
+		attributes["tracetest.span.type"] = spanType(attributes)
+	}
 	return cty.ObjectVal(map[string]cty.Value{
 		"trace_id": cty.StringVal(span.TraceID), "span_id": cty.StringVal(span.SpanID), "parent_span_id": cty.StringVal(span.ParentSpanID),
 		"name": cty.StringVal(span.Name), "kind": cty.StringVal(span.Kind), "status": cty.StringVal(span.Status), "status_message": cty.StringVal(span.StatusMessage),
-		"duration": cty.NumberIntVal(int64(span.Duration)), "attributes": valueFromAny(span.Attributes),
+		"duration": cty.NumberIntVal(int64(span.Duration)), "attributes": valueFromAny(attributes),
 	})
+}
+
+func spanType(attributes map[string]any) string {
+	if _, exists := attributes["http.method"]; exists {
+		return "http"
+	}
+	if _, exists := attributes["db.system"]; exists {
+		return "database"
+	}
+	if _, exists := attributes["messaging.system"]; exists {
+		return "messaging"
+	}
+	if _, exists := attributes["rpc.system"]; exists {
+		return "rpc"
+	}
+	return "general"
 }
 
 func ResourceValue(resource map[string]any) cty.Value { return valueFromAny(resource) }
