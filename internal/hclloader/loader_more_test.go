@@ -50,9 +50,9 @@ func TestParseDatasourceTable(t *testing.T) {
 		{name: "jaeger", source: `datasource "jaeger" { endpoint = "http://localhost:16686" }`},
 		{name: "otlp provider", source: `datasource "datadog" { endpoint = "http://localhost:4318" }`},
 		{name: "missing endpoint", source: `datasource "tempo" {}`, wantNil: true, wantDiags: true},
-		{name: "complete", source: "datasource \"tempo\" {\n  endpoint = var.ENDPOINT\n  headers = { X = \"one\" }\n  observation_window = duration(\"4s\")\n  settle_window = duration(\"1s\")\n  auth { bearer_token = var.TOKEN }\n  tls { skip_verify = true }\n}\n", wantDiags: true},
+		{name: "complete", source: "datasource \"tempo\" {\n  endpoint = var.ENDPOINT\n  headers = { X = \"one\" }\n  observation_window = duration(\"4s\")\n  settle_window = duration(\"1s\")\n  polling_interval = duration(\"250ms\")\n  auth { bearer_token = var.TOKEN }\n  tls { skip_verify = true }\n}\n", wantDiags: true},
 		{name: "duplicate auth tls", source: "datasource \"tempo\" {\n  endpoint = \"x\"\n  auth { bearer_token = \"one\" }\n  auth { bearer_token = \"two\" }\n  tls { skip_verify = false }\n  tls { skip_verify = false }\n}\n", wantDiags: true},
-		{name: "invalid windows", source: "datasource \"tempo\" {\n  endpoint = \"x\"\n  observation_window = 0\n  settle_window = \"bad\"\n}\n", wantDiags: true},
+		{name: "invalid windows", source: "datasource \"tempo\" {\n  endpoint = \"x\"\n  observation_window = 0\n  settle_window = \"bad\"\n  polling_interval = 0\n}\n", wantDiags: true},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -60,7 +60,7 @@ func TestParseDatasourceTable(t *testing.T) {
 			if (got == nil) != tt.wantNil || (len(diags) > 0) != tt.wantDiags {
 				t.Fatalf("datasource=%#v diagnostics=%#v", got, diags)
 			}
-			if tt.name == "complete" && (got.ObservationWindow != 4*time.Second || got.SettleWindow != time.Second || !got.TLSSkipVerify || got.BearerToken == nil || len(got.Headers) != 1) {
+			if tt.name == "complete" && (got.ObservationWindow != 4*time.Second || got.SettleWindow != time.Second || got.PollingInterval != 250*time.Millisecond || !got.TLSSkipVerify || got.BearerToken == nil || len(got.Headers) != 1) {
 				t.Fatalf("complete datasource=%#v", got)
 			}
 		})

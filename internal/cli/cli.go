@@ -17,6 +17,7 @@ import (
 	"lamplight/internal/artifact"
 	"lamplight/internal/config"
 	"lamplight/internal/datasource"
+	"lamplight/internal/debuglog"
 	"lamplight/internal/engine"
 	"lamplight/internal/expr"
 	"lamplight/internal/hclloader"
@@ -45,6 +46,16 @@ func Main(ctx context.Context, args []string, streams IO) int {
 	if streams.Err == nil {
 		streams.Err = os.Stderr
 	}
+	var verbose bool
+	args, verbose = extractVerbose(args)
+	if verbose {
+		ctx = debuglog.With(ctx, streams.Err)
+	}
+	command := ""
+	if len(args) > 0 {
+		command = args[0]
+	}
+	debuglog.Debug(ctx, "starting command", "command", command, "argument_count", max(0, len(args)-1))
 	if handled, exitCode := handleHelp(args, streams); handled {
 		return exitCode
 	}
@@ -65,32 +76,49 @@ func Main(ctx context.Context, args []string, streams IO) int {
 		if dir == "" {
 			dir = "."
 		}
+		debuglog.Debug(ctx, "initializing project", "working_dir", dir)
 		if err := initcmd.Run(dir); err != nil {
 			writeLine(streams.Err, "error:", err)
 			return 1
 		}
 		return 0
 	case "validate":
-		return validate(args[1:], streams)
+		return validate(ctx, args[1:], streams)
 	case "list":
 		if len(args) < 2 || args[1] != "tests" {
 			usage(streams.Err)
 			return 1
 		}
-		return listTests(args[2:], streams)
+		return listTests(ctx, args[2:], streams)
 	case "run":
 		return run(ctx, args[1:], streams)
 	case "mcp":
 		return runMCP(ctx, args[1:], streams)
 	case "migrate":
-		return migrate(args[1:], streams)
+		return migrate(ctx, args[1:], streams)
 	default:
 		usage(streams.Err)
 		return 1
 	}
 }
 
-func migrate(args []string, streams IO) int {
+func extractVerbose(args []string) ([]string, bool) {
+	filtered := make([]string, 0, len(args))
+	verbose := false
+	for _, arg := range args {
+		switch arg {
+		case "-v", "--verbose", "--verbose=true":
+			verbose = true
+		case "--verbose=false":
+			verbose = false
+		default:
+			filtered = append(filtered, arg)
+		}
+	}
+	return filtered, verbose
+}
+
+func migrate(ctx context.Context, args []string, streams IO) int {
 	if len(args) == 0 || args[0] != "tracetest" {
 		writeLine(streams.Err, "error: migrate requires the source format: tracetest")
 		return 1
@@ -99,25 +127,87 @@ func migrate(args []string, streams IO) int {
 	fs.SetOutput(streams.Err)
 	outputDir := fs.String("output-dir", ".", "Lamplight project output directory")
 	force := fs.Bool("force", false, "overwrite generated .wick files")
-	if fs.Parse(args[1:]) != nil {
+	fs.BoolVar(force, "f", false, "overwrite generated .wick files")
+	normalized := normalizeMigrateArgs(args[1:])
+	debuglog.Debug(ctx, "parsing migration arguments", "arguments", strings.Join(normalized, " "))
+	if fs.Parse(normalized) != nil {
 		return 1
 	}
 	if len(fs.Args()) != 1 {
+		debuglog.Debug(ctx, "invalid migration input count", "inputs", strings.Join(fs.Args(), ","), "count", len(fs.Args()))
 		writeLine(streams.Err, "error: migrate tracetest requires one YAML file or directory")
 		return 1
 	}
-	results, err := tracetestmigrate.Run(fs.Args()[0], *outputDir, *force)
+	input := fs.Args()[0]
+	debuglog.Debug(ctx, "migration configured", "input", input, "output_dir", *outputDir, "force", *force)
+	results, err := tracetestmigrate.RunContext(ctx, input, *outputDir, *force)
 	if err != nil {
 		writeLine(streams.Err, "error:", err)
 		return 1
 	}
+	printMigrationResults(streams, results)
+	return 0
+}
+
+func printMigrationResults(streams IO, results []tracetestmigrate.FileResult) {
+	formatter := render.NewAutoPrettyFormatter(streams.Out)
+	errFormatter := render.NewAutoPrettyFormatter(streams.Err)
+	importedTests, importedDatasources, ignored := 0, 0, 0
 	for _, result := range results {
-		writef(streams.Out, "%s -> %s\n", result.Source, result.Destination)
-		for _, warning := range result.Warnings {
-			writeLine(streams.Err, "warning:", warning)
+		if result.ImportedTests == 0 && result.ImportedDatasources == 0 {
+			ignored++
+			writef(streams.Out, "%s %s %s\n", formatter.Muted("·"), result.Source, formatter.Muted("ignored · no resources found"))
+		} else {
+			importedTests += result.ImportedTests
+			importedDatasources += result.ImportedDatasources
+			var resources []string
+			if result.ImportedTests > 0 {
+				resource := "tests"
+				if result.ImportedTests == 1 {
+					resource = "test"
+				}
+				resources = append(resources, fmt.Sprintf("%d %s", result.ImportedTests, resource))
+			}
+			if result.ImportedDatasources > 0 {
+				resources = append(resources, fmt.Sprintf("%d datasource", result.ImportedDatasources))
+			}
+			writef(streams.Out, "%s %s %s %s\n", formatter.Success("✓"), result.Source, formatter.Success("processed"), formatter.Accent("· "+strings.Join(resources, ", ")))
+		}
+		for _, message := range result.Warnings {
+			writef(streams.Err, "%s %s\n", errFormatter.Warning("! warning"), message)
 		}
 	}
-	return 0
+	writeLine(streams.Out)
+	testLabel, datasourceLabel := "tests", "datasources"
+	if importedTests == 1 {
+		testLabel = "test"
+	}
+	if importedDatasources == 1 {
+		datasourceLabel = "datasource"
+	}
+	writef(streams.Out, "%s %s\n", formatter.Success(fmt.Sprintf("Imported %d %s · %d %s", importedTests, testLabel, importedDatasources, datasourceLabel)), formatter.Muted(fmt.Sprintf("· Ignored %d files", ignored)))
+}
+
+func normalizeMigrateArgs(args []string) []string {
+	flags := make([]string, 0, len(args))
+	positionals := make([]string, 0, 1)
+	for index := 0; index < len(args); index++ {
+		argument := args[index]
+		if strings.HasPrefix(argument, "-") {
+			flags = append(flags, argument)
+			name := argument
+			if before, _, found := strings.Cut(argument, "="); found {
+				name = before
+			}
+			if name == "--output-dir" && !strings.Contains(argument, "=") && index+1 < len(args) {
+				index++
+				flags = append(flags, args[index])
+			}
+			continue
+		}
+		positionals = append(positionals, argument)
+	}
+	return append(flags, positionals...)
 }
 
 func runMCP(ctx context.Context, args []string, streams IO) int {
@@ -158,31 +248,36 @@ func commonFlags(name string, stderr io.Writer) (*flag.FlagSet, *common) {
 	return fs, c
 }
 
-func load(c *common, streams IO) (*model.ProjectDefinition, bool) {
+func loadContext(ctx context.Context, c *common, streams IO) (*model.ProjectDefinition, bool) {
+	debuglog.Debug(ctx, "loading project", "config", c.config, "working_dir", c.working)
 	def, diags := hclloader.Loader{}.LoadProject(config.Options{ConfigPath: c.config, WorkingDir: c.working})
 	hasErrors := printDiagnostics(streams.Err, diags)
+	if def != nil {
+		debuglog.Debug(ctx, "project loaded", "config", def.ConfigPath, "tests", len(def.Tests), "variables", len(def.Variables), "diagnostics", len(diags))
+	}
 	return def, !hasErrors && def != nil
 }
 
-func validate(args []string, streams IO) int {
+func validate(ctx context.Context, args []string, streams IO) int {
 	fs, c := commonFlags("validate", streams.Err)
 	if fs.Parse(args) != nil {
 		return 1
 	}
-	def, ok := load(c, streams)
+	def, ok := loadContext(ctx, c, streams)
 	if !ok {
 		return 1
 	}
-	writef(streams.Out, "Valid: %d tests, %d variables\n", len(def.Tests), len(def.Variables))
+	formatter := render.NewAutoPrettyFormatter(streams.Out)
+	writef(streams.Out, "%s %s %s\n", formatter.Success("✓"), formatter.Success("Valid:"), formatter.Accent(fmt.Sprintf("%d tests · %d variables", len(def.Tests), len(def.Variables))))
 	return 0
 }
 
-func listTests(args []string, streams IO) int {
+func listTests(ctx context.Context, args []string, streams IO) int {
 	fs, c := commonFlags("list tests", streams.Err)
 	if fs.Parse(args) != nil {
 		return 1
 	}
-	def, ok := load(c, streams)
+	def, ok := loadContext(ctx, c, streams)
 	if !ok {
 		return 1
 	}
@@ -191,9 +286,10 @@ func listTests(args []string, streams IO) int {
 		names = append(names, n)
 	}
 	sort.Strings(names)
+	formatter := render.NewAutoPrettyFormatter(streams.Out)
 	for _, name := range names {
 		t := def.Tests[name]
-		writef(streams.Out, "%s\ttags=%s\tfile=%s\trequires_datasource=%t\n", t.Name, strings.Join(t.Tags, ","), t.File, testNeedsDatasource(t))
+		writef(streams.Out, "%s %s %s\n", formatter.Success("✓"), formatter.Accent(t.Name), formatter.Muted(fmt.Sprintf("· tags=%s · file=%s · requires_datasource=%t", strings.Join(t.Tags, ","), t.File, testNeedsDatasource(t))))
 	}
 	return 0
 }
@@ -219,6 +315,7 @@ func run(ctx context.Context, args []string, streams IO) int {
 	tag := fs.String("tag", "", "select tag")
 	output := fs.String("output", "", "output format")
 	keep := fs.Bool("keep-artifacts", false, "keep successful artifacts")
+	failFast := fs.Bool("fail-fast", false, "stop after the first failed or errored test")
 	artifactsDir := fs.String("artifacts-dir", "", "artifact parent directory")
 	fs.Var(&vars, "var", "NAME=VALUE")
 	if fs.Parse(normalizeRunArgs(args)) != nil {
@@ -233,7 +330,7 @@ func run(ctx context.Context, args []string, streams IO) int {
 	if len(remaining) == 1 {
 		name = remaining[0]
 	}
-	def, ok := load(c, streams)
+	def, ok := loadContext(ctx, c, streams)
 	if !ok {
 		return 1
 	}
@@ -242,11 +339,13 @@ func run(ctx context.Context, args []string, streams IO) int {
 		writeLine(streams.Err, "error:", err)
 		return 1
 	}
+	debuglog.Debug(ctx, "selected tests", "count", len(tests), "name", name, "tag", *tag)
 	expressions := collectExpressions(def, tests)
 	values, diags := runtimevars.Resolve(def.Variables, runtimevars.Input{Vars: vars}, expressions...)
 	if printDiagnostics(streams.Err, diags) {
 		return 1
 	}
+	debuglog.Debug(ctx, "resolved runtime variables", "count", len(values), "overrides", len(vars))
 	runtimeProject := &model.Project{Definition: def, Variables: values, Tests: tests, HTTPClient: def.HTTPClient}
 	if def.HTTPProxy != nil {
 		value, err := evalString(def.HTTPProxy, values)
@@ -264,10 +363,12 @@ func run(ctx context.Context, args []string, streams IO) int {
 		}
 		runtimeProject.Datasource = store
 	}
-	httpExecutor := httpstep.New(nil)
-	eng := engine.Engine{HTTP: httpExecutor, Triggers: triggerexecutor.New(httpExecutor), TraceFactory: tracecontext.NewFactory()}
-	runResult := eng.Run(ctx, runtimeProject)
 	redactor := result.NewRedactor(sensitiveStrings(values)...)
+	progress := newRunProgress(streams.Err, redactor)
+	httpExecutor := httpstep.New(nil)
+	eng := engine.Engine{HTTP: httpExecutor, Triggers: triggerexecutor.New(httpExecutor), TraceFactory: tracecontext.NewFactory(), FailFast: *failFast, Progress: progress.Report}
+	runResult := eng.Run(ctx, runtimeProject)
+	debuglog.Debug(ctx, "test run completed", "run_id", runResult.RunID, "status", runResult.Status, "tests", len(runResult.Tests))
 	store, err := artifact.NewStore(*artifactsDir, redactor)
 	if err != nil {
 		writeLine(streams.Err, "error: artifacts:", err)
@@ -283,7 +384,12 @@ func run(ctx context.Context, args []string, streams IO) int {
 	if *output != "" {
 		format = *output
 	}
-	renderer, err := render.New(render.Format(format), redactor)
+	var renderer model.Renderer
+	if render.Format(format) == render.FormatPretty {
+		renderer = render.NewAutoPrettyRenderer(streams.Out, redactor)
+	} else {
+		renderer, err = render.New(render.Format(format), redactor)
+	}
 	if err != nil {
 		writeLine(streams.Err, "error:", err)
 		return 1
@@ -444,6 +550,9 @@ Commands:
   help [COMMAND]       Show help for a command
 
 Run "lamplight help <command>" for details about a command.
+
+Global options:
+  -v, --verbose        Write debug logs to stderr
 `)
 }
 
@@ -534,6 +643,7 @@ Options:
       --tag TAG           Run tests containing TAG
       --var NAME=VALUE    Override a variable (repeatable)
       --output FORMAT     Output format: pretty, text, or json
+      --fail-fast         Stop after the first failed or errored test
       --keep-artifacts    Keep artifacts for successful runs
       --artifacts-dir DIR Artifact parent directory
   -h, --help              Show this help
@@ -566,7 +676,7 @@ Arguments:
 
 Options:
       --output-dir DIR  Output project directory (default: current directory)
-      --force           Overwrite generated .wick files
+  -f, --force           Overwrite generated .wick files
   -h, --help            Show this help
 `,
 	}

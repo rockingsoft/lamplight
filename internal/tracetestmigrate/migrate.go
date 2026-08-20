@@ -27,8 +27,9 @@ type testSpec struct {
 }
 
 type trigger struct {
-	Type        string      `yaml:"type"`
-	HTTPRequest httpRequest `yaml:"httpRequest"`
+	Type        string       `yaml:"type"`
+	HTTPRequest httpRequest  `yaml:"httpRequest"`
+	Kafka       kafkaRequest `yaml:"kafka"`
 }
 
 type httpRequest struct {
@@ -36,6 +37,14 @@ type httpRequest struct {
 	Method  string   `yaml:"method"`
 	Headers []header `yaml:"headers"`
 	Body    string   `yaml:"body"`
+}
+
+type kafkaRequest struct {
+	BrokerURLs   []string `yaml:"brokerUrls"`
+	Topic        string   `yaml:"topic"`
+	Headers      []header `yaml:"headers"`
+	MessageKey   string   `yaml:"messageKey"`
+	MessageValue string   `yaml:"messageValue"`
 }
 
 type header struct{ Key, Value string }
@@ -57,6 +66,8 @@ var (
 	conditionPattern         = regexp.MustCompile(`^\s*([A-Za-z0-9_.:-]+)\s*(=|!=|>=|<=|>|<)\s*(.+?)\s*$`)
 	selectorConditionPattern = regexp.MustCompile(`([A-Za-z0-9_.:-]+)\s*(=|!=|>=|<=|>|<)\s*("(?:[^"\\]|\\.)*"|'[^']*'|[^\s]+)`)
 	countPattern             = regexp.MustCompile(`^(?:attr:)?tracetest\.selected_spans\.count\s*(=|!=|>=|<=|>|<)\s*([0-9]+)$`)
+	jsonPathPattern          = regexp.MustCompile(`^\s*([A-Za-z0-9_.:-]+)\s*\|\s*json_path\s+(?:'([^']+)'|"([^"]+)")\s*(=|!=|>=|<=|>|<|contains)\s*(.+?)\s*$`)
+	jsonPathSegmentPattern   = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_-]*(?:\[\*\])?$`)
 )
 
 // Convert converts exactly one Tracetest resource. Multi-document YAML is
@@ -78,21 +89,37 @@ func Convert(source []byte) (Result, error) {
 	if strings.TrimSpace(doc.Spec.Name) == "" {
 		return Result{}, fmt.Errorf("spec.name is required")
 	}
-	if doc.Spec.Trigger.Type != "http" {
-		return Result{}, fmt.Errorf("trigger type %q is not supported; Lamplight migration currently supports http", doc.Spec.Trigger.Type)
-	}
-	request := doc.Spec.Trigger.HTTPRequest
-	if request.URL == "" || request.Method == "" {
-		return Result{}, fmt.Errorf("http trigger requires method and url")
-	}
-
 	variables := map[string]struct{}{}
-	collectVariables(variables, request.URL, request.Method, request.Body)
-	for _, h := range request.Headers {
-		if h.Key == "" {
-			return Result{}, fmt.Errorf("http trigger contains a header without a key")
+	switch doc.Spec.Trigger.Type {
+	case "http":
+		request := doc.Spec.Trigger.HTTPRequest
+		if request.URL == "" || request.Method == "" {
+			return Result{}, fmt.Errorf("http trigger requires method and url")
 		}
-		collectVariables(variables, h.Value)
+		collectVariables(variables, request.URL, request.Method, request.Body)
+		for _, h := range request.Headers {
+			if h.Key == "" {
+				return Result{}, fmt.Errorf("http trigger contains a header without a key")
+			}
+			collectVariables(variables, h.Value)
+		}
+	case "kafka":
+		request := doc.Spec.Trigger.Kafka
+		if len(request.BrokerURLs) == 0 || request.Topic == "" || request.MessageValue == "" {
+			return Result{}, fmt.Errorf("kafka trigger requires brokerUrls, topic, and messageValue")
+		}
+		collectVariables(variables, request.Topic, request.MessageKey, request.MessageValue)
+		for _, broker := range request.BrokerURLs {
+			collectVariables(variables, broker)
+		}
+		for _, h := range request.Headers {
+			if h.Key == "" {
+				return Result{}, fmt.Errorf("kafka trigger contains a header without a key")
+			}
+			collectVariables(variables, h.Value)
+		}
+	default:
+		return Result{}, fmt.Errorf("trigger type %q is not supported; Lamplight migration currently supports http and kafka", doc.Spec.Trigger.Type)
 	}
 
 	var out strings.Builder
@@ -111,19 +138,12 @@ func Convert(source []byte) (Result, error) {
 		}
 		out.WriteString("]\n\n")
 	}
-	out.WriteString("  step \"request\" {\n    http_request {\n")
-	fmt.Fprintf(&out, "      method = %s\n      url    = %s\n", templateString(request.Method), templateString(request.URL))
-	if len(request.Headers) > 0 {
-		out.WriteString("      headers = {\n")
-		for _, h := range request.Headers {
-			fmt.Fprintf(&out, "        %s = %s\n", strconv.Quote(h.Key), templateString(h.Value))
-		}
-		out.WriteString("      }\n")
+	out.WriteString("  step \"request\" {\n")
+	if doc.Spec.Trigger.Type == "http" {
+		writeHTTPRequest(&out, doc.Spec.Trigger.HTTPRequest)
+	} else {
+		writeKafkaRequest(&out, doc.Spec.Trigger.Kafka)
 	}
-	if request.Body != "" {
-		fmt.Fprintf(&out, "      body = %s\n", templateString(request.Body))
-	}
-	out.WriteString("    }\n")
 
 	result := Result{Name: doc.Spec.Name}
 	for index, oldSpec := range doc.Spec.Specs {
@@ -139,6 +159,44 @@ func Convert(source []byte) (Result, error) {
 	return result, nil
 }
 
+func writeHTTPRequest(out *strings.Builder, request httpRequest) {
+	out.WriteString("    http_request {\n")
+	fmt.Fprintf(out, "      method = %s\n      url    = %s\n", templateString(request.Method), templateString(request.URL))
+	writeHeaders(out, request.Headers)
+	if request.Body != "" {
+		fmt.Fprintf(out, "      body = %s\n", templateString(request.Body))
+	}
+	out.WriteString("    }\n")
+}
+
+func writeKafkaRequest(out *strings.Builder, request kafkaRequest) {
+	out.WriteString("    kafka_request {\n      broker_urls = [")
+	for index, broker := range request.BrokerURLs {
+		if index > 0 {
+			out.WriteString(", ")
+		}
+		out.WriteString(templateString(broker))
+	}
+	out.WriteString("]\n")
+	fmt.Fprintf(out, "      topic         = %s\n      message_value = %s\n", templateString(request.Topic), templateString(request.MessageValue))
+	if request.MessageKey != "" {
+		fmt.Fprintf(out, "      message_key   = %s\n", templateString(request.MessageKey))
+	}
+	writeHeaders(out, request.Headers)
+	out.WriteString("    }\n")
+}
+
+func writeHeaders(out *strings.Builder, headers []header) {
+	if len(headers) == 0 {
+		return
+	}
+	out.WriteString("      headers = {\n")
+	for _, h := range headers {
+		fmt.Fprintf(out, "        %s = %s\n", strconv.Quote(h.Key), templateString(h.Value))
+	}
+	out.WriteString("      }\n")
+}
+
 func convertSpec(old spec, index int) (string, []string, error) {
 	name := strings.TrimSpace(old.Name)
 	if name == "" {
@@ -151,7 +209,6 @@ func convertSpec(old spec, index int) (string, []string, error) {
 	responses := map[string]string{}
 	spanAssertions := map[string]string{}
 	quantityName, quantityValue := "at_least", 1
-	warnings := []string{}
 	for assertionIndex, raw := range old.Assertions {
 		raw = strings.TrimSpace(raw)
 		if match := countPattern.FindStringSubmatch(raw); match != nil {
@@ -186,9 +243,6 @@ func convertSpec(old spec, index int) (string, []string, error) {
 			spanAssertions[assertionName] = expression
 		}
 	}
-	if len(spanAssertions) > 0 {
-		warnings = append(warnings, fmt.Sprintf("%s: Tracetest applies assertions to every selected span; Lamplight will require the configured number of spans to satisfy them", name))
-	}
 	var out strings.Builder
 	fmt.Fprintf(&out, "\n    check %q {\n", name)
 	if len(responses) > 0 {
@@ -208,7 +262,7 @@ func convertSpec(old spec, index int) (string, []string, error) {
 		out.WriteString("      }\n")
 	}
 	out.WriteString("    }\n")
-	return out.String(), warnings, nil
+	return out.String(), nil, nil
 }
 
 func convertSelector(raw string) (string, error) {
@@ -245,7 +299,57 @@ func convertSelector(raw string) (string, error) {
 }
 
 func convertAssertion(raw string) (string, bool, error) {
+	if match := jsonPathPattern.FindStringSubmatch(raw); match != nil {
+		return convertJSONPathAssertion(raw, match)
+	}
 	return convertCondition(raw)
+}
+
+func convertJSONPathAssertion(raw string, match []string) (string, bool, error) {
+	left, response := attribute(match[1])
+	if left == "" {
+		return "", false, fmt.Errorf("attribute %q is not supported", match[1])
+	}
+	path := match[2]
+	if path == "" {
+		path = match[3]
+	}
+	if !strings.HasPrefix(path, "$.") {
+		return "", false, fmt.Errorf("JSON path %q is not supported", path)
+	}
+	expression := "jsondecode(" + left + ")"
+	collection := false
+	for _, segment := range strings.Split(strings.TrimPrefix(path, "$."), ".") {
+		if !jsonPathSegmentPattern.MatchString(segment) {
+			return "", false, fmt.Errorf("JSON path %q is not supported", path)
+		}
+		if strings.HasSuffix(segment, "[*]") {
+			collection = true
+			segment = strings.TrimSuffix(segment, "[*]") + "[*]"
+		}
+		expression += "." + segment
+	}
+	right := strings.TrimSpace(match[5])
+	if !regexp.MustCompile(`^(?:true|false|null|-?[0-9]+(?:\.[0-9]+)?|"(?:[^"\\]|\\.)*"|'[^']*')$`).MatchString(right) {
+		return "", false, fmt.Errorf("right-hand value %q is not supported", right)
+	}
+	if strings.HasPrefix(right, "'") {
+		right = strconv.Quote(strings.Trim(right, "'"))
+	}
+	op := match[4]
+	if op == "contains" {
+		if !collection {
+			return "", false, fmt.Errorf("JSON path %q must select a collection for contains", path)
+		}
+		return "contains(" + expression + ", " + right + ")", response, nil
+	}
+	if op == "=" {
+		op = "=="
+	}
+	if strings.HasPrefix(right, `"`) {
+		expression = "tostring(" + expression + ")"
+	}
+	return expression + " " + op + " " + right, response, nil
 }
 
 func convertCondition(raw string) (string, bool, error) {

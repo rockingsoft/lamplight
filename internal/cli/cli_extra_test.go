@@ -3,15 +3,22 @@ package cli
 import (
 	"bytes"
 	"context"
+	"encoding/json"
+	"fmt"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/hashicorp/hcl/v2"
 	"github.com/hashicorp/hcl/v2/hclsyntax"
 	"github.com/zclconf/go-cty/cty"
+	"lamplight/internal/engine"
 	"lamplight/internal/model"
+	"lamplight/internal/result"
 )
 
 func cliExpr(t *testing.T, source string) hcl.Expression {
@@ -43,7 +50,7 @@ func TestMainHelp(t *testing.T) {
 		{[]string{"--help"}, []string{"Usage:", "Commands:", "run [TEST_NAME]"}},
 		{[]string{"-h"}, []string{"Lamplight runs trace-based integration tests."}},
 		{[]string{"help"}, []string{"migrate tracetest", "help [COMMAND]"}},
-		{[]string{"help", "run"}, []string{"--var NAME=VALUE", "--keep-artifacts"}},
+		{[]string{"help", "run"}, []string{"--var NAME=VALUE", "--keep-artifacts", "--fail-fast"}},
 		{[]string{"run", "health", "--help"}, []string{"lamplight run [options] [TEST_NAME]"}},
 		{[]string{"list", "tests", "-h"}, []string{"datasource requirements", "--config FILE"}},
 		{[]string{"migrate", "tracetest", "--help"}, []string{"Arguments:", "--output-dir DIR"}},
@@ -84,14 +91,72 @@ func TestMainMigratesTracetestProject(t *testing.T) {
 	}
 	output := t.TempDir()
 	var stdout, stderr bytes.Buffer
-	code := Main(context.Background(), []string{"migrate", "tracetest", "--output-dir", output, input}, IO{Out: &stdout, Err: &stderr})
-	if code != 0 || !strings.Contains(stdout.String(), "health.wick") {
+	code := Main(context.Background(), []string{"-v", "migrate", "tracetest", input, "--output-dir", output}, IO{Out: &stdout, Err: &stderr})
+	if code != 0 || !strings.Contains(stdout.String(), input+" processed · 1 test") || !strings.Contains(stdout.String(), "Imported 1 test · 0 datasources · Ignored 0 files") {
 		t.Fatalf("code=%d stdout=%q stderr=%q", code, stdout.String(), stderr.String())
+	}
+	for _, expected := range []string{`msg="migration configured"`, "input=" + input, "output_dir=" + output, `msg="discovered Tracetest files" count=1`, `msg="wrote migrated file"`} {
+		if !strings.Contains(stderr.String(), expected) {
+			t.Fatalf("stderr missing %q: %q", expected, stderr.String())
+		}
 	}
 	stdout.Reset()
 	stderr.Reset()
 	if code := Main(context.Background(), []string{"validate", "-w", output}, IO{Out: &stdout, Err: &stderr}); code != 0 || !strings.Contains(stdout.String(), "Valid: 1 tests") {
 		t.Fatalf("validate code=%d stdout=%q stderr=%q", code, stdout.String(), stderr.String())
+	}
+}
+
+func TestVerboseIsGlobalAndWritesDebugOnlyToStderr(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, ".lamplight"), []byte("project {\n  base_dir = \".\"\n  output = \"json\"\n}\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	var stdout, stderr bytes.Buffer
+	code := Main(context.Background(), []string{"validate", "-w", dir, "-v"}, IO{Out: &stdout, Err: &stderr})
+	if code != 0 {
+		t.Fatalf("code=%d stdout=%q stderr=%q", code, stdout.String(), stderr.String())
+	}
+	if !strings.Contains(stdout.String(), "Valid:") {
+		t.Fatalf("stdout=%q", stdout.String())
+	}
+	for _, expected := range []string{"level=DEBUG", `msg="starting command"`, `msg="loading project"`, `msg="project loaded"`} {
+		if !strings.Contains(stderr.String(), expected) {
+			t.Fatalf("stderr missing %q: %q", expected, stderr.String())
+		}
+	}
+
+	stderr.Reset()
+	stdout.Reset()
+	if code := Main(context.Background(), []string{"validate", "-w", dir}, IO{Out: &stdout, Err: &stderr}); code != 0 || stderr.Len() != 0 {
+		t.Fatalf("non-verbose code=%d stdout=%q stderr=%q", code, stdout.String(), stderr.String())
+	}
+}
+
+func TestMigrateReportsUnknownFlagAfterInput(t *testing.T) {
+	var stdout, stderr bytes.Buffer
+	code := Main(context.Background(), []string{"-v", "migrate", "tracetest", "./tracetest", "--output", "lamplight"}, IO{Out: &stdout, Err: &stderr})
+	if code != 1 {
+		t.Fatalf("code=%d stdout=%q stderr=%q", code, stdout.String(), stderr.String())
+	}
+	if !strings.Contains(stderr.String(), "flag provided but not defined: -output") {
+		t.Fatalf("stderr=%q", stderr.String())
+	}
+}
+
+func TestMigrateForceShortAliasAfterInput(t *testing.T) {
+	input := filepath.Join(t.TempDir(), "legacy.yaml")
+	yaml := "type: Test\nspec:\n  name: Health\n  trigger:\n    type: http\n    httpRequest:\n      method: GET\n      url: http://localhost/health\n"
+	if err := os.WriteFile(input, []byte(yaml), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	output := t.TempDir()
+	for attempt := 0; attempt < 2; attempt++ {
+		var stdout, stderr bytes.Buffer
+		code := Main(context.Background(), []string{"migrate", "tracetest", input, "--output-dir", output, "-f"}, IO{Out: &stdout, Err: &stderr})
+		if code != 0 {
+			t.Fatalf("attempt=%d code=%d stdout=%q stderr=%q", attempt, code, stdout.String(), stderr.String())
+		}
 	}
 }
 
@@ -209,5 +274,107 @@ func TestRunReportsSelectionAndVariableErrors(t *testing.T) {
 		if code := Main(context.Background(), args, IO{Out: &out, Err: &stderr}); code != 1 || stderr.Len() == 0 {
 			t.Fatalf("args=%v code=%d stderr=%q", args, code, stderr.String())
 		}
+	}
+}
+
+func TestRunContinuesByDefaultReportsProgressAndSupportsFailFast(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, _ *http.Request) {
+		writer.Header().Set("Content-Type", "application/json")
+		writer.WriteHeader(http.StatusOK)
+		_, _ = writer.Write([]byte(`{"ok":true}`))
+	}))
+	defer server.Close()
+
+	dir := t.TempDir()
+	testsDir := filepath.Join(dir, "tests")
+	if err := os.Mkdir(testsDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, ".lamplight"), []byte("project {\n  base_dir = \"tests\"\n  output = \"json\"\n}\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	definitions := map[string]string{
+		"a-fails.wick":  "test \"first\" {\n  step \"request\" {\n    http_request {\n      method = \"GET\"\n      url = \"http://127.0.0.1:1\"\n    }\n  }\n}\n",
+		"b-passes.wick": fmt.Sprintf("test \"second\" {\n  step \"request\" {\n    http_request {\n      method = \"GET\"\n      url = %q\n    }\n  }\n}\n", server.URL),
+	}
+	for name, body := range definitions {
+		if err := os.WriteFile(filepath.Join(testsDir, name), []byte(body), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	for _, test := range []struct {
+		name       string
+		flags      []string
+		wantSecond model.Status
+	}{
+		{name: "continue", wantSecond: model.StatusPassed},
+		{name: "fail fast", flags: []string{"--fail-fast"}, wantSecond: model.StatusSkipped},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			var stdout, stderr bytes.Buffer
+			args := append([]string{"run", "-w", dir, "--output", "json"}, test.flags...)
+			if code := Main(context.Background(), args, IO{Out: &stdout, Err: &stderr}); code != 1 {
+				t.Fatalf("code=%d stdout=%q stderr=%q", code, stdout.String(), stderr.String())
+			}
+			var run model.RunResult
+			if err := json.Unmarshal(stdout.Bytes(), &run); err != nil {
+				t.Fatalf("decode output: %v\nstdout=%s\nstderr=%s", err, stdout.String(), stderr.String())
+			}
+			if len(run.Tests) != 2 || run.Tests[0].Status != model.StatusError || run.Tests[1].Status != test.wantSecond {
+				t.Fatalf("tests=%#v\nstdout=%s\nstderr=%s", run.Tests, stdout.String(), stderr.String())
+			}
+			for _, expected := range []string{"Running 2 tests", "Test: first", "Step: request"} {
+				if !strings.Contains(stderr.String(), expected) {
+					t.Errorf("progress missing %q: %s", expected, stderr.String())
+				}
+			}
+		})
+	}
+}
+
+func TestRunProgressReportsTraceWaitImmediately(t *testing.T) {
+	var output bytes.Buffer
+	progress := newRunProgress(&output, result.NewRedactor())
+	progress.Report(engine.ProgressEvent{Kind: engine.ProgressTracePolling, StepName: "request", ObservationWindow: time.Minute})
+	if got := output.String(); !strings.Contains(got, "Polling trace spans (up to 1m0s)...") {
+		t.Fatalf("progress=%q", got)
+	}
+}
+
+func TestRunProgressShowsTriggerResultAndSpanMatches(t *testing.T) {
+	var output bytes.Buffer
+	progress := newRunProgress(&output, result.NewRedactor())
+	progress.Report(engine.ProgressEvent{Kind: engine.ProgressTriggerStarted, StepName: "request", Trigger: model.TriggerHTTP})
+	progress.Report(engine.ProgressEvent{Kind: engine.ProgressTriggerCompleted, StepName: "request", Trigger: model.TriggerHTTP, Status: model.StatusPassed, StatusCode: 201, DurationMS: 12})
+	progress.Report(engine.ProgressEvent{Kind: engine.ProgressTracePolling, ObservationWindow: time.Minute})
+	progress.Report(engine.ProgressEvent{Kind: engine.ProgressTraceObserved, Attempt: 2, SpanCount: 4, Checks: []engine.ProgressCheck{{Name: "created", MatchCount: 1, Status: model.StatusPassed}}})
+	text := output.String()
+	for _, expected := range []string{"Running http trigger", "HTTP trigger succeeded · HTTP 201 · 12 ms", "attempt 2", "4 spans received", "1 span matching", "1/1 checks ready"} {
+		if !strings.Contains(text, expected) {
+			t.Errorf("progress missing %q: %s", expected, text)
+		}
+	}
+}
+
+func TestRunProgressSpinnerUpdatesAndFinishesInTerminalMode(t *testing.T) {
+	var output bytes.Buffer
+	progress := newRunProgress(&output, result.NewRedactor())
+	progress.terminal = true
+	progress.Report(engine.ProgressEvent{Kind: engine.ProgressTriggerStarted, Trigger: model.TriggerHTTP})
+	time.Sleep(20 * time.Millisecond)
+	progress.Report(engine.ProgressEvent{Kind: engine.ProgressTriggerCompleted, Trigger: model.TriggerHTTP, Status: model.StatusError, DurationMS: 20})
+	text := output.String()
+	if !strings.Contains(text, "\x1b[2K") || !strings.Contains(text, "HTTP trigger failed") {
+		t.Fatalf("spinner output=%q", text)
+	}
+}
+
+func TestRunProgressFitsSpinnerToOneTerminalLine(t *testing.T) {
+	progress := newRunProgress(&bytes.Buffer{}, result.NewRedactor())
+	progress.width = 40
+	got := progress.fitSpinnerText("    ", strings.Repeat("very long polling status ", 5))
+	if len([]rune(got)) > 34 || !strings.HasSuffix(got, "…") {
+		t.Fatalf("fitted text=%q len=%d", got, len([]rune(got)))
 	}
 }

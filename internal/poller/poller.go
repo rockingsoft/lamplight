@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"time"
 
+	"lamplight/internal/debuglog"
 	"lamplight/internal/model"
 )
 
@@ -17,9 +18,17 @@ const defaultInterval = time.Second
 
 // SpanCheck is the normalized, compiled part of one spans block.
 type SpanCheck struct {
-	Name  string
-	Rule  model.QuantityRule
-	Match func(model.Span) (bool, error)
+	Name       string
+	Rule       model.QuantityRule
+	Match      func(model.Span) (bool, error)
+	Assertions []SpanAssertion
+}
+
+// SpanAssertion is evaluated for every span selected by Match.
+type SpanAssertion struct {
+	Name     string
+	Source   model.SourceRange
+	Evaluate func(model.Span) (bool, error)
 }
 
 // Config controls one step lifecycle. Clock is injectable so tests need no
@@ -29,6 +38,25 @@ type Config struct {
 	SettleWindow      time.Duration
 	Interval          time.Duration
 	Clock             model.Clock
+	Progress          func(Progress)
+}
+
+// Progress is emitted after every datasource observation attempt so
+// interactive callers can explain what polling is currently seeing.
+type Progress struct {
+	Attempt    int
+	SpanCount  int
+	Found      bool
+	Complete   bool
+	Partial    bool
+	RetryError string
+	Checks     []CheckProgress
+}
+
+type CheckProgress struct {
+	Name       string
+	MatchCount int
+	Status     model.Status
 }
 
 // Result records the terminal state for all checks and the last observation.
@@ -41,6 +69,7 @@ type Result struct {
 // check. It returns a non-nil error only for a non-retriable datasource or a
 // malformed check; cancellation is represented by cancelled check states.
 func Poll(ctx context.Context, store model.DataStore, traceID model.TraceID, config Config, checks []SpanCheck) (Result, error) {
+	debuglog.Debug(ctx, "trace polling started", "trace_id", traceID, "checks", len(checks), "observation_window", config.ObservationWindow, "settle_window", config.SettleWindow)
 	if store == nil {
 		return Result{}, errors.New("poller requires a datasource")
 	}
@@ -69,6 +98,7 @@ func Poll(ctx context.Context, store model.DataStore, traceID model.TraceID, con
 	seenValid := false
 	stableSince := time.Time{}
 	lastFingerprint := ""
+	attempt := 0
 
 	for {
 		if ctx.Err() != nil {
@@ -83,12 +113,15 @@ func Poll(ctx context.Context, store model.DataStore, traceID model.TraceID, con
 			return Result{Checks: results(states), Observation: last}, nil
 		}
 
+		attempt++
 		observation, err := store.Observe(ctx, traceID)
 		if err != nil {
 			var observationError *model.ObservationError
 			if !errors.As(err, &observationError) || !observationError.Retriable {
 				return Result{Checks: results(states), Observation: last}, fmt.Errorf("observe trace %s: %w", traceID, err)
 			}
+			debuglog.Debug(ctx, "trace observation retry", "trace_id", traceID, "error", err, "retry_after", observationError.RetryAfter)
+			reportProgress(config.Progress, Progress{Attempt: attempt, RetryError: err.Error(), Checks: checkProgress(states)})
 			if err := wait(ctx, config.Clock, retryDelay(config.Interval, observationError.RetryAfter)); err != nil {
 				cancel(&states)
 				return Result{Checks: results(states), Observation: last}, nil
@@ -96,6 +129,7 @@ func Poll(ctx context.Context, store model.DataStore, traceID model.TraceID, con
 			continue
 		}
 		last = observation
+		debuglog.Debug(ctx, "trace observed", "trace_id", traceID, "found", observation.Found, "complete", observation.Complete, "partial", observation.Partial, "spans", len(observation.Spans))
 		if observation.Valid && (observation.Found || observation.Complete) {
 			seenValid = true
 			fingerprint := observation.Fingerprint
@@ -109,15 +143,36 @@ func Poll(ctx context.Context, store model.DataStore, traceID model.TraceID, con
 			if err := applyObservation(&states, observation, config.SettleWindow, stableSince, now); err != nil {
 				return Result{Checks: results(states), Observation: last}, err
 			}
+			reportProgress(config.Progress, Progress{Attempt: attempt, SpanCount: len(observation.Spans), Found: observation.Found, Complete: observation.Complete, Partial: observation.Partial, Checks: checkProgress(states)})
 			if terminal(states) {
+				debuglog.Debug(ctx, "trace polling completed", "trace_id", traceID)
 				return Result{Checks: results(states), Observation: last}, nil
 			}
+		} else {
+			reportProgress(config.Progress, Progress{Attempt: attempt, SpanCount: len(observation.Spans), Found: observation.Found, Complete: observation.Complete, Partial: observation.Partial, Checks: checkProgress(states)})
 		}
 		if err := wait(ctx, config.Clock, config.Interval); err != nil {
 			cancel(&states)
 			return Result{Checks: results(states), Observation: last}, nil
 		}
 	}
+}
+
+func reportProgress(report func(Progress), progress Progress) {
+	if report != nil {
+		report(progress)
+	}
+}
+
+func checkProgress(states []checkState) []CheckProgress {
+	progress := make([]CheckProgress, len(states))
+	for index, state := range states {
+		progress[index] = CheckProgress{Name: state.check.Name, Status: state.result.Status}
+		if state.result.SpanEvidence != nil {
+			progress[index].MatchCount = state.result.SpanEvidence.MatchCount
+		}
+	}
+	return progress
 }
 
 type checkState struct {
@@ -131,6 +186,11 @@ func validate(check SpanCheck) error {
 	}
 	if check.Rule.Value < 0 {
 		return fmt.Errorf("span check %q has negative quantity", check.Name)
+	}
+	for _, assertion := range check.Assertions {
+		if assertion.Name == "" || assertion.Evaluate == nil {
+			return fmt.Errorf("span check %q has an invalid assertion", check.Name)
+		}
 	}
 	switch check.Rule.Kind {
 	case "at_least", "at_most", "exactly":
@@ -146,11 +206,18 @@ func applyObservation(states *[]checkState, observation model.TraceObservation, 
 		if state.result.Status != "" {
 			continue
 		}
-		count, err := matches(state.check, observation.Spans)
+		evaluated, err := evaluate(state.check, observation.Spans)
 		if err != nil {
 			return fmt.Errorf("evaluate span check %q: %w", state.check.Name, err)
 		}
-		state.result = model.CheckResult{Name: state.check.Name, Status: "", SpanEvidence: &model.SpanEvidence{Rule: state.check.Rule, MatchCount: count}}
+		count := evaluated.count
+		state.result = model.CheckResult{Name: state.check.Name, Status: "", SpanEvidence: &model.SpanEvidence{Rule: state.check.Rule, MatchCount: count, Assertions: evaluated.evidence}}
+		if !evaluated.assertionsPassed {
+			state.result.Status = model.StatusFailed
+			state.result.Reason = "span_assertion_failed"
+			state.result.SpanEvidence.Reason = "span_assertion_failed"
+			continue
+		}
 		switch state.check.Rule.Kind {
 		case "at_least":
 			if count >= state.check.Rule.Value {
@@ -159,7 +226,7 @@ func applyObservation(states *[]checkState, observation model.TraceObservation, 
 			}
 		case "at_most":
 			if count > state.check.Rule.Value {
-				state.result = failedResult(state.check, count, "maximum_exceeded")
+				state.result = failedResult(state.check, count, "maximum_exceeded", evaluated.evidence)
 			} else if observation.Complete {
 				state.result.Status = model.StatusPassed
 				state.result.SpanEvidence.Reason = "trace_complete"
@@ -169,7 +236,7 @@ func applyObservation(states *[]checkState, observation model.TraceObservation, 
 			}
 		case "exactly":
 			if count > state.check.Rule.Value {
-				state.result = failedResult(state.check, count, "exact_count_exceeded")
+				state.result = failedResult(state.check, count, "exact_count_exceeded", evaluated.evidence)
 			} else if observation.Complete && count == state.check.Rule.Value {
 				state.result.Status = model.StatusPassed
 				state.result.SpanEvidence.Reason = "trace_complete"
@@ -182,18 +249,46 @@ func applyObservation(states *[]checkState, observation model.TraceObservation, 
 	return nil
 }
 
-func matches(check SpanCheck, spans []model.Span) (int, error) {
-	count := 0
+type evaluation struct {
+	count            int
+	assertionsPassed bool
+	evidence         []model.AssertionEvidence
+}
+
+func evaluate(check SpanCheck, spans []model.Span) (evaluation, error) {
+	result := evaluation{assertionsPassed: true}
+	evidenceByName := map[string]model.AssertionEvidence{}
 	for _, span := range spans {
 		match, err := check.Match(span)
 		if err != nil {
-			return count, err
+			return result, err
 		}
-		if match {
-			count++
+		if !match {
+			continue
+		}
+		result.count++
+		for _, assertion := range check.Assertions {
+			passed, err := assertion.Evaluate(span)
+			if err != nil {
+				return result, fmt.Errorf("assertion %q: %w", assertion.Name, err)
+			}
+			prior, exists := evidenceByName[assertion.Name]
+			if !exists {
+				prior = model.AssertionEvidence{Name: assertion.Name, Passed: true, Value: true, Source: assertion.Source}
+			}
+			if !passed {
+				prior.Passed, prior.Value = false, false
+				result.assertionsPassed = false
+			}
+			evidenceByName[assertion.Name] = prior
 		}
 	}
-	return count, nil
+	for _, assertion := range check.Assertions {
+		if item, exists := evidenceByName[assertion.Name]; exists {
+			result.evidence = append(result.evidence, item)
+		}
+	}
+	return result, nil
 }
 
 func finishDeadline(states *[]checkState, seenValid bool, last model.TraceObservation) error {
@@ -203,18 +298,25 @@ func finishDeadline(states *[]checkState, seenValid bool, last model.TraceObserv
 			continue
 		}
 		if !seenValid {
-			state.result = failedResult(state.check, 0, "trace_not_observed")
+			state.result = failedResult(state.check, 0, "trace_not_observed", nil)
 			continue
 		}
-		count, err := matches(state.check, last.Spans)
+		evaluated, err := evaluate(state.check, last.Spans)
 		if err != nil {
 			return fmt.Errorf("evaluate span check %q: %w", state.check.Name, err)
 		}
-		state.result = model.CheckResult{Name: state.check.Name, SpanEvidence: &model.SpanEvidence{Rule: state.check.Rule, MatchCount: count}}
+		count := evaluated.count
+		state.result = model.CheckResult{Name: state.check.Name, SpanEvidence: &model.SpanEvidence{Rule: state.check.Rule, MatchCount: count, Assertions: evaluated.evidence}}
 		if last.Partial && !last.Complete {
 			state.result.Status = model.StatusFailed
 			state.result.Reason = "partial_observation"
 			state.result.SpanEvidence.Reason = "partial_observation"
+			continue
+		}
+		if !evaluated.assertionsPassed {
+			state.result.Status = model.StatusFailed
+			state.result.Reason = "span_assertion_failed"
+			state.result.SpanEvidence.Reason = "span_assertion_failed"
 			continue
 		}
 		passed := (state.check.Rule.Kind == "at_least" && count >= state.check.Rule.Value) ||
@@ -224,14 +326,14 @@ func finishDeadline(states *[]checkState, seenValid bool, last model.TraceObserv
 			state.result.Status = model.StatusPassed
 			state.result.SpanEvidence.Reason = "observation_window_elapsed"
 		} else {
-			state.result = failedResult(state.check, count, "count_not_satisfied")
+			state.result = failedResult(state.check, count, "count_not_satisfied", evaluated.evidence)
 		}
 	}
 	return nil
 }
 
-func failedResult(check SpanCheck, count int, reason string) model.CheckResult {
-	return model.CheckResult{Name: check.Name, Status: model.StatusFailed, Reason: reason, SpanEvidence: &model.SpanEvidence{Rule: check.Rule, MatchCount: count, Reason: reason}}
+func failedResult(check SpanCheck, count int, reason string, evidence []model.AssertionEvidence) model.CheckResult {
+	return model.CheckResult{Name: check.Name, Status: model.StatusFailed, Reason: reason, SpanEvidence: &model.SpanEvidence{Rule: check.Rule, MatchCount: count, Reason: reason, Assertions: evidence}}
 }
 
 func terminal(states []checkState) bool {

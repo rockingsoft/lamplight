@@ -37,6 +37,7 @@ datasource "tempo" {
   endpoint           = var.TEMPO_ENDPOINT
   observation_window = duration("30s")
   settle_window      = duration("2s")
+  polling_interval   = duration("1s")
 }
 ```
 
@@ -175,9 +176,11 @@ attributes are accessed directly through `resource`, not through
 
 Before the first step of a run, Lamplight calls `/ready` once if any selected
 test needs trace data. It then performs the HTTP request and polls the step's
-trace ID immediately and approximately once per second.
+trace ID immediately and once per configured `polling_interval`.
 
 - `observation_window` is the hard deadline. The default is 30 seconds.
+- `polling_interval` is the delay between trace queries. The default is 1
+  second.
 - `settle_window` is the stability period used for negative checks. The
   default is 2 seconds.
 - A per-check `observation_window` can extend the effective step window. The

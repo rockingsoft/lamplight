@@ -144,9 +144,10 @@ Migrate legacy Tracetest YAML tests into a new Lamplight project:
 ./lamplight validate --working-dir ./migrated
 ```
 
-The migrator supports Tracetest HTTP tests and fails explicitly on constructs
-that cannot be represented safely. See the CLI reference for the conversion
-contract and review warnings emitted for span assertion semantics.
+The migrator supports Tracetest HTTP and Kafka tests plus compatible datastore
+provisioning, reports one styled processed or ignored status per input file,
+and fails explicitly on constructs that cannot be represented safely. See the
+CLI reference for the conversion contract.
 
 Run all tests, one test, or a tag:
 
@@ -154,7 +155,13 @@ Run all tests, one test, or a tag:
 ./lamplight run
 ./lamplight run healthcheck
 ./lamplight run --tag smoke
+./lamplight run --fail-fast
 ```
+
+Runs continue with later tests after a failure or technical error by default.
+Use `--fail-fast` to stop at the first non-passing test. Live progress is
+printed while tests are running, including trigger results and per-attempt span
+match counts during trace polling.
 
 Start the MCP server for coding agents over stdio:
 

@@ -76,3 +76,40 @@ func TestPollReturnsPredicateErrorAsTechnicalError(t *testing.T) {
 		t.Fatal("predicate error became a check failure")
 	}
 }
+
+func TestPollAppliesAssertionsToEveryMatchingSpan(t *testing.T) {
+	clock := &fakeClock{now: time.Unix(0, 0)}
+	store := &datasource.Fake{Script: []datasource.ScriptedObservation{{Observation: model.TraceObservation{Found: true, Valid: true, Complete: true, Spans: []model.Span{{Name: "valid"}, {Name: "invalid"}}}}}}
+	check := SpanCheck{
+		Name:  "all selected spans",
+		Rule:  model.QuantityRule{Kind: "at_least", Value: 1},
+		Match: matchAll,
+		Assertions: []SpanAssertion{{Name: "valid name", Evaluate: func(span model.Span) (bool, error) {
+			return span.Name == "valid", nil
+		}}},
+	}
+	result, err := Poll(context.Background(), store, "trace", Config{Clock: clock, ObservationWindow: time.Minute}, []SpanCheck{check})
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := result.Checks[0]
+	if got.Status != model.StatusFailed || got.Reason != "span_assertion_failed" || got.SpanEvidence.MatchCount != 2 {
+		t.Fatalf("check=%#v", got)
+	}
+	if len(got.SpanEvidence.Assertions) != 1 || got.SpanEvidence.Assertions[0].Passed {
+		t.Fatalf("assertion evidence=%#v", got.SpanEvidence.Assertions)
+	}
+}
+
+func TestPollAtLeastPassesImmediatelyWhenObservedSpansSatisfyAssertions(t *testing.T) {
+	clock := &fakeClock{now: time.Unix(0, 0)}
+	store := &datasource.Fake{Script: []datasource.ScriptedObservation{
+		{Observation: model.TraceObservation{Found: true, Valid: true, Spans: []model.Span{{Name: "valid"}}}},
+		{Observation: model.TraceObservation{Found: true, Valid: true, Complete: true, Spans: []model.Span{{Name: "valid"}, {Name: "invalid"}}}},
+	}}
+	check := SpanCheck{Name: "all", Rule: model.QuantityRule{Kind: "at_least", Value: 1}, Match: matchAll, Assertions: []SpanAssertion{{Name: "valid", Evaluate: func(span model.Span) (bool, error) { return span.Name == "valid", nil }}}}
+	result, err := Poll(context.Background(), store, "trace", Config{Clock: clock, ObservationWindow: time.Minute, Interval: time.Second}, []SpanCheck{check})
+	if err != nil || store.Calls != 1 || result.Checks[0].Status != model.StatusPassed || result.Checks[0].SpanEvidence.Reason != "minimum_reached" {
+		t.Fatalf("result=%#v calls=%d err=%v", result, store.Calls, err)
+	}
+}

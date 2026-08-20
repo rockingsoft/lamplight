@@ -5,8 +5,10 @@ package render
 import (
 	"bytes"
 	"fmt"
+	"io"
 	"strings"
 
+	"github.com/muesli/termenv"
 	"lamplight/internal/model"
 	"lamplight/internal/result"
 )
@@ -126,22 +128,33 @@ func NewPrettyRenderer(color bool, redactors ...result.Redactor) *PrettyRenderer
 	return &PrettyRenderer{Color: color, Redactor: firstRedactor(redactors)}
 }
 
+// NewAutoPrettyRenderer applies the same terminal color detection used by the
+// other pretty CLI commands.
+func NewAutoPrettyRenderer(writer io.Writer, redactors ...result.Redactor) *PrettyRenderer {
+	formatter := NewAutoPrettyFormatter(writer)
+	return NewPrettyRenderer(formatter.output.Profile != termenv.Ascii, redactors...)
+}
+
 func (r *PrettyRenderer) Render(run model.RunResult) ([]byte, error) {
 	var output bytes.Buffer
-	fmt.Fprintf(&output, "%s %s (%s)\n", r.statusMarker(run.Status), r.statusLabel(run.Status), r.Redactor.RedactString(run.RunID))
+	formatter := NewPrettyFormatter(&output, r.Color)
+	fmt.Fprintf(&output, "%s %s (%s)\n", formatter.StatusMarker(run.Status), formatter.StatusLabel(run.Status), r.Redactor.RedactString(run.RunID))
 	fmt.Fprintf(&output, "Started %s · %d ms · %d passed, %d failed, %d errors\n", run.StartedAt.Format("2006-01-02 15:04:05Z07:00"), run.DurationMS, run.Summary.TestsPassed, run.Summary.TestsFailed, run.Summary.Errors)
 	for _, test := range run.Tests {
-		fmt.Fprintf(&output, "%s %s", r.statusMarker(test.Status), r.Redactor.RedactString(test.Name))
+		fmt.Fprintf(&output, "%s %s", formatter.StatusMarker(test.Status), r.Redactor.RedactString(test.Name))
 		if len(test.Tags) > 0 {
 			fmt.Fprintf(&output, " [%s]", strings.Join(redactStrings(r.Redactor, test.Tags), ", "))
 		}
 		fmt.Fprintf(&output, " · %d ms\n", test.DurationMS)
+		r.writePrettyDiagnostic(&output, formatter, "  ", test.Error)
 		for _, step := range test.Steps {
-			fmt.Fprintf(&output, "  %s %s · %d ms\n", r.statusMarker(step.Status), r.Redactor.RedactString(step.Name), step.DurationMS)
+			fmt.Fprintf(&output, "  %s %s · %d ms\n", formatter.StatusMarker(step.Status), r.Redactor.RedactString(step.Name), step.DurationMS)
+			r.writePrettyDiagnostic(&output, formatter, "    ", step.Error)
 			for _, check := range step.Checks {
-				fmt.Fprintf(&output, "    %s %s", r.statusMarker(check.Status), r.Redactor.RedactString(check.Name))
-				if check.Reason != "" {
-					fmt.Fprintf(&output, " — %s", r.Redactor.RedactString(check.Reason))
+				status, reason := prettyCheckState(step.Status, check)
+				fmt.Fprintf(&output, "    %s %s", formatter.StatusMarker(status), r.Redactor.RedactString(check.Name))
+				if reason != "" {
+					fmt.Fprintf(&output, " — %s", r.Redactor.RedactString(reason))
 				}
 				output.WriteByte('\n')
 			}
@@ -155,37 +168,98 @@ func (r *PrettyRenderer) Render(run model.RunResult) ([]byte, error) {
 	return output.Bytes(), nil
 }
 
+func prettyCheckState(stepStatus model.Status, check model.CheckResult) (model.Status, string) {
+	if stepStatus != model.StatusCancelled {
+		return check.Status, check.Reason
+	}
+	if check.Status == model.StatusPassed {
+		return model.StatusCancelled, "completed before cancellation"
+	}
+	return model.StatusCancelled, "cancelled"
+}
+
+func (r *PrettyRenderer) writePrettyDiagnostic(output *bytes.Buffer, formatter PrettyFormatter, indent string, diagnostic *model.Diagnostic) {
+	if diagnostic == nil {
+		return
+	}
+	summary, suggestion := friendlyDiagnostic(diagnostic)
+	fmt.Fprintf(output, "%s%s %s\n", indent, formatter.Failure("Error:"), r.Redactor.RedactString(summary))
+	fmt.Fprintf(output, "%s%s %s\n", indent, formatter.Muted("Details:"), r.Redactor.RedactString(diagnostic.Message))
+	if suggestion != "" {
+		fmt.Fprintf(output, "%s%s %s\n", indent, formatter.Accent("Try:"), r.Redactor.RedactString(suggestion))
+	}
+}
+
+func friendlyDiagnostic(diagnostic *model.Diagnostic) (string, string) {
+	suggestion := diagnostic.Suggestion
+	message := strings.ToLower(diagnostic.Message)
+
+	switch diagnostic.Code {
+	case "datasource_required":
+		return "These tests need a trace datasource, but none is configured.", firstNonEmpty(suggestion, "Add a datasource block to .lamplight and run the command again.")
+	case "datasource_connection":
+		summary := "Lamplight could not connect to the trace datasource."
+		if strings.Contains(message, "no such host") || strings.Contains(message, "server misbehaving") {
+			return summary, firstNonEmpty(suggestion, "Check the datasource hostname. Docker service names only resolve inside their Docker network; from the host, use a published address such as localhost.")
+		}
+		if strings.Contains(message, "connection refused") {
+			return summary, firstNonEmpty(suggestion, "Make sure the datasource is running and that its configured host and port are reachable from this machine.")
+		}
+		if strings.Contains(message, "timeout") || strings.Contains(message, "deadline exceeded") {
+			return summary, firstNonEmpty(suggestion, "Check network access to the datasource and verify that the configured endpoint responds before retrying.")
+		}
+		return summary, firstNonEmpty(suggestion, "Verify the datasource endpoint and credentials, then retry the run.")
+	case "http_execution":
+		summary := "The test's HTTP request could not be completed."
+		if strings.Contains(message, "no such host") {
+			return summary, firstNonEmpty(suggestion, "Check the request hostname and whether it is resolvable from this machine.")
+		}
+		if strings.Contains(message, "connection refused") {
+			return summary, firstNonEmpty(suggestion, "Make sure the target service is running and listening on the configured host and port.")
+		}
+		if strings.Contains(message, "timeout") || strings.Contains(message, "deadline exceeded") {
+			return summary, firstNonEmpty(suggestion, "Check the target service and network, or increase the HTTP timeout if the response is expected to take longer.")
+		}
+		return summary, firstNonEmpty(suggestion, "Verify the request URL and target service, then retry the run.")
+	case "trigger_execution":
+		if strings.Contains(message, "kafka") || strings.Contains(message, "broker") {
+			summary := "Lamplight could not connect to a Kafka broker."
+			if strings.Contains(message, "connection refused") || strings.Contains(message, "available brokers") {
+				return summary, firstNonEmpty(suggestion, "Make sure Kafka is running, then use the broker's host-published address and port. A container port such as 9092 may be published on a different host port.")
+			}
+			if strings.Contains(message, "no such host") {
+				return summary, firstNonEmpty(suggestion, "Check the broker hostname. Docker service names only resolve inside their Docker network; host-run tests need a host-published address.")
+			}
+			if strings.Contains(message, "timeout") || strings.Contains(message, "deadline exceeded") {
+				return summary, firstNonEmpty(suggestion, "Check that Kafka is healthy and reachable, and verify its advertised listeners match the address used by this test.")
+			}
+			return summary, firstNonEmpty(suggestion, "Verify the broker address, published port, and advertised listeners, then retry the run.")
+		}
+		return "The test trigger could not be executed.", firstNonEmpty(suggestion, "Check the trigger configuration and make sure its target service is running and reachable.")
+	case "trace_not_observed":
+		return "No trace reached the datasource before the observation window ended.", firstNonEmpty(suggestion, "Verify that the application exports this request's trace to the configured datasource; if it is only delayed, increase observation_window.")
+	default:
+		return fmt.Sprintf("Run error [%s].", diagnostic.Code), suggestion
+	}
+}
+
+func firstNonEmpty(values ...string) string {
+	for _, value := range values {
+		if value != "" {
+			return value
+		}
+	}
+	return ""
+}
+
+// statusMarker and statusLabel remain as narrow compatibility helpers for
+// callers inside this package; all styling is delegated to PrettyFormatter.
 func (r *PrettyRenderer) statusMarker(status model.Status) string {
-	marker := "?"
-	switch status {
-	case model.StatusPassed:
-		marker = "✓"
-	case model.StatusFailed:
-		marker = "✗"
-	case model.StatusError:
-		marker = "!"
-	case model.StatusCancelled:
-		marker = "■"
-	case model.StatusSkipped:
-		marker = "-"
-	}
-	if !r.Color {
-		return marker
-	}
-	code := "33"
-	switch status {
-	case model.StatusPassed:
-		code = "32"
-	case model.StatusFailed, model.StatusError:
-		code = "31"
-	case model.StatusCancelled:
-		code = "33"
-	}
-	return "\x1b[" + code + "m" + marker + "\x1b[0m"
+	return NewPrettyFormatter(io.Discard, r.Color).StatusMarker(status)
 }
 
 func (r *PrettyRenderer) statusLabel(status model.Status) string {
-	return strings.ToUpper(string(status))
+	return NewPrettyFormatter(io.Discard, r.Color).StatusLabel(status)
 }
 
 // New returns a renderer for format. Pretty starts without ANSI; the CLI can

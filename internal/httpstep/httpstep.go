@@ -15,6 +15,7 @@ import (
 	"strings"
 	"unicode/utf8"
 
+	"lamplight/internal/debuglog"
 	"lamplight/internal/model"
 	"lamplight/internal/tracecontext"
 )
@@ -29,6 +30,7 @@ func New(transport http.RoundTripper) *Executor { return &Executor{Transport: tr
 func (e *Executor) Execute(ctx context.Context, request model.HTTPRequest, config model.HTTPClientConfig, trace *model.TestTraceContext) (model.Response, error) {
 	config = defaults(config)
 	method := strings.TrimSpace(request.Method)
+	debuglog.Debug(ctx, "HTTP request started", "method", method, "url", request.URL, "request_bytes", len(request.Body))
 	if method == "" {
 		return model.Response{}, errors.New("HTTP method is required")
 	}
@@ -65,6 +67,7 @@ func (e *Executor) Execute(ctx context.Context, request model.HTTPRequest, confi
 	if err != nil {
 		return model.Response{}, err
 	}
+	debuglog.Debug(ctx, "HTTP response received", "method", method, "url", request.URL, "status_code", response.StatusCode, "response_bytes", len(body))
 	return normalize(response, body)
 }
 

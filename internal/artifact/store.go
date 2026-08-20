@@ -11,6 +11,7 @@ import (
 	"strings"
 	"sync"
 
+	"lamplight/internal/debuglog"
 	"lamplight/internal/model"
 	"lamplight/internal/result"
 )
@@ -105,10 +106,12 @@ func (s *Store) Finalize(ctx context.Context, run model.RunResult, keep bool) ([
 	if err := s.ensureRunDirectory(run.RunID); err != nil {
 		return nil, err
 	}
+	debuglog.Debug(ctx, "finalizing artifacts", "run_id", run.RunID, "directory", s.runDir, "keep", keep, "status", run.Status)
 	if err := s.writeSnapshot(ctx, run); err != nil {
 		return nil, err
 	}
 	if keep || run.Status != model.StatusPassed {
+		debuglog.Debug(ctx, "retained artifacts", "directory", s.runDir)
 		return s.references(), nil
 	}
 	directory := s.runDir
@@ -116,6 +119,7 @@ func (s *Store) Finalize(ctx context.Context, run model.RunResult, keep bool) ([
 		return nil, fmt.Errorf("remove successful run artifacts: %w", err)
 	}
 	s.runDir = ""
+	debuglog.Debug(ctx, "removed successful run artifacts", "directory", directory)
 	return nil, nil
 }
 

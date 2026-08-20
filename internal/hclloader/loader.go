@@ -65,12 +65,12 @@ func parseDatasource(block *hcl.Block) (*model.DatasourceDefinition, []model.Dia
 	if len(block.Labels) != 1 || !model.IsSupportedDatasourceKind(block.Labels[0]) {
 		return nil, []model.Diagnostic{diagnostic.Error(diagnostic.CodeSchema, fmt.Sprintf("unsupported datasource %q", strings.Join(block.Labels, " ")), block.DefRange, "use one of: "+strings.Join(model.SupportedDatasourceKinds, ", "))}
 	}
-	content, hclDiags := block.Body.Content(&hcl.BodySchema{Attributes: []hcl.AttributeSchema{{Name: "endpoint", Required: true}, {Name: "observation_window"}, {Name: "settle_window"}, {Name: "headers"}}, Blocks: []hcl.BlockHeaderSchema{{Type: "auth"}, {Type: "tls"}}})
+	content, hclDiags := block.Body.Content(&hcl.BodySchema{Attributes: []hcl.AttributeSchema{{Name: "endpoint", Required: true}, {Name: "observation_window"}, {Name: "settle_window"}, {Name: "polling_interval"}, {Name: "headers"}}, Blocks: []hcl.BlockHeaderSchema{{Type: "auth"}, {Type: "tls"}}})
 	diags = append(diags, diagnostic.FromHCL(hclDiags, diagnostic.CodeSchema)...)
 	if _, ok := content.Attributes["endpoint"]; !ok {
 		return nil, diags
 	}
-	datasource := &model.DatasourceDefinition{Kind: block.Labels[0], Endpoint: content.Attributes["endpoint"].Expr, Headers: map[string]hcl.Expression{}, ObservationWindow: 30 * time.Second, SettleWindow: 2 * time.Second}
+	datasource := &model.DatasourceDefinition{Kind: block.Labels[0], Endpoint: content.Attributes["endpoint"].Expr, Headers: map[string]hcl.Expression{}, ObservationWindow: 30 * time.Second, SettleWindow: 2 * time.Second, PollingInterval: time.Second}
 	if attr, ok := content.Attributes["headers"]; ok {
 		values, ds := expressionMap(attr.Expr)
 		datasource.Headers = values
@@ -92,6 +92,15 @@ func parseDatasource(block *hcl.Block) (*model.DatasourceDefinition, []model.Dia
 			datasource.SettleWindow = value
 		} else if len(ds) == 0 {
 			diags = append(diags, diagnostic.Error(diagnostic.CodeSchema, "datasource.settle_window must be positive", attr.Expr.Range(), "use duration(\"2s\")"))
+		}
+	}
+	if attr, ok := content.Attributes["polling_interval"]; ok {
+		value, ds := durationExpression(attr.Expr)
+		diags = append(diags, ds...)
+		if len(ds) == 0 && value > 0 {
+			datasource.PollingInterval = value
+		} else if len(ds) == 0 {
+			diags = append(diags, diagnostic.Error(diagnostic.CodeSchema, "datasource.polling_interval must be positive", attr.Expr.Range(), "use duration(\"1s\")"))
 		}
 	}
 	if len(blocksOfType(content.Blocks, "auth")) > 1 {

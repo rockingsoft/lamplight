@@ -128,6 +128,7 @@ datasource "tempo" {
   endpoint           = var.TEMPO_ENDPOINT
   observation_window = duration("30s")
   settle_window      = duration("2s")
+  polling_interval   = duration("1s")
 
   headers = {
     "X-Scope-OrgID" = var.TEMPO_TENANT
@@ -161,6 +162,7 @@ Datasource properties:
 | `endpoint` | yes | string expression | — | `var` | Query URL or local OTLP listener, according to the adapter table. |
 | `observation_window` | no | literal `duration(...)` | `30s` | none | Hard polling limit per step. Must be positive. |
 | `settle_window` | no | literal `duration(...)` | `2s` | none | Stability period used to finish negative checks early. Must be positive. |
+| `polling_interval` | no | literal `duration(...)` | `1s` | none | Delay between trace datasource observations. Must be positive. |
 | `headers` | no | map of string expressions | `{}` | `var` | Headers added to readiness and trace requests. Keys are static strings. |
 
 `auth` properties:
@@ -418,23 +420,25 @@ Properties:
 | Property | Required | Type | Default | Description |
 | --- | --- | --- | --- | --- |
 | `matching` | yes | boolean expression | — | Evaluated once per observed span. |
-| `span_assertions` | no | map of boolean expressions | `{}` | Additional per-span predicates. All must be true for the span to count. |
-| `at_least` | exactly one quantity rule | non-negative literal integer | — | Minimum number of matching spans. |
-| `at_most` | exactly one quantity rule | non-negative literal integer | — | Maximum number of matching spans. |
-| `exactly` | exactly one quantity rule | non-negative literal integer | — | Exact final number of matching spans. |
+| `span_assertions` | no | map of boolean expressions | `{}` | Assertions applied to every span selected by `matching`; every assertion must pass for every selected span. |
+| `at_least` | exactly one quantity rule | non-negative literal integer | — | Minimum number of spans selected by `matching`. |
+| `at_most` | exactly one quantity rule | non-negative literal integer | — | Maximum number of spans selected by `matching`. |
+| `exactly` | exactly one quantity rule | non-negative literal integer | — | Exact final number of spans selected by `matching`. |
 | `observation_window` | no | positive literal duration | datasource value | Per-check hard window. The step uses the largest applicable window. |
 
 Quantity behavior:
 
 | Rule | Early success | Early failure | Window result |
 | --- | --- | --- | --- |
-| `at_least = N` | when count reaches N | never from under-count | fails if final count is below N |
-| `at_most = N` | on complete or settled valid evidence within limit | when count exceeds N | passes if final count is at most N |
-| `exactly = N` | on complete evidence with count N; `N=0` may also settle | when count exceeds N | passes only if final count is N |
+| `at_least = N` | as soon as at least N currently observed spans match and all their assertions pass | when any currently observed selected span fails an assertion | fails at the window if fewer than N spans were observed or an evaluated assertion failed |
+| `at_most = N` | on complete or settled valid evidence within limit | when count exceeds N or any selected span fails an assertion | passes if final count is at most N and all assertions passed |
+| `exactly = N` | on complete evidence with count N; `N=0` may also settle | when count exceeds N or any selected span fails an assertion | passes only if final count is N and all assertions passed |
 
 One poller is shared by all span checks in a step. Lamplight polls immediately,
 then at one-second intervals. A trace that never appears is not interpreted as
 zero spans; it produces the technical reason `trace_not_observed`.
+An assertion failure produces `span_assertion_failed` and includes aggregated
+assertion evidence; a single failing selected span makes its assertion fail.
 
 ## 10. Expression contexts
 
@@ -617,34 +621,64 @@ Options:
 | `--tag TAG` | Select tests containing a tag. Cannot be combined with a test name. |
 | `--var NAME=VALUE` | Override a variable. May be repeated; duplicate names are rejected. |
 | `--output FORMAT` | Override `project.output` with `pretty`, `text`, or `json`. |
+| `--fail-fast` | Stop after the first failed or errored test and mark the remaining tests as skipped. |
 | `--keep-artifacts` | Preserve artifacts after a successful run. |
 | `--artifacts-dir DIR` | Select the parent directory for run artifacts. |
 
-With no selector, all tests run once. A test name and `--tag` cannot be
-combined. A selector that matches nothing is an error.
+With no selector, all tests run once. By default, an errored or failed test does
+not prevent later tests from running. `--fail-fast` stops after the first
+non-passing test. A test name and `--tag` cannot be combined. A selector that
+matches nothing is an error.
+
+Execution progress is written to stderr as each datasource check, test, step,
+and trigger starts or completes. In an interactive terminal, in-flight triggers
+and trace polling use an updating spinner. Each trace observation reports its
+attempt number, total spans received, and matching span count per check. With
+redirected stderr the same transitions are emitted as append-only lines. The
+final selected output format is written to stdout, so JSON and text output
+remain machine-readable.
 
 ### 13.5 `lamplight migrate tracetest`
 
 ```text
-lamplight migrate tracetest [--output-dir DIR] [--force] INPUT
+lamplight migrate tracetest [--output-dir DIR] [-f|--force] INPUT
 ```
 
 Migrates a legacy Tracetest `type: Test` YAML file, or all `.yaml` and `.yml`
 files below an input directory, into a Lamplight project. The default output
 directory is the current directory. The command creates `.lamplight` when it
 does not exist and writes one `lamplight/<test-name>.wick` file per test.
+Flags may appear before or after `INPUT`. Every inspected file prints one status:
+`processed, found N test(s)` or `ignored, no resources found`. YAML documents
+that are not `type: Test` resources, including Tracetest configuration and
+transactions, are ignored. A file may contain multiple YAML documents. A
+compatible Tracetest `DataStore` is imported into `.lamplight`. Direct mappings
+cover Jaeger, Tempo, OpenSearch, Elastic APM, and SignalFX. OTLP-based mappings
+cover `otlp`, New Relic, Lightstep, Datadog, Honeycomb, SigNoz, Dynatrace,
+Instana, and Dash0 using Lamplight's default local listener at
+`http://127.0.0.1:4318`. Jaeger gRPC port `16685` becomes HTTP query port
+`16686`; Tempo gRPC port `9095` becomes HTTP query port `3200`. Search indexes,
+headers, basic authentication, and TLS skip-verification settings are retained.
+The default `PollingProfile.periodic.timeout`, when present, becomes
+`observation_window`.
 
-The migration supports HTTP triggers, headers, bodies, `${VARIABLE}`
-references, single-span selectors, response status/body assertions, span and
-resource attribute comparisons, duration assertions, and selected-span count
-rules. Generated variables have no default and are supplied with
+AWS X-Ray, Azure Application Insights, and Sumo Logic provisioning is rejected:
+Tracetest queries those providers directly with credentials, while Lamplight
+requires a local OTLP adaptation endpoint, so there is no lossless automatic
+endpoint conversion.
+
+The migration supports HTTP and Kafka triggers, headers, bodies/messages,
+`${VARIABLE}` references, single-span selectors, response status/body
+assertions, span and resource attribute comparisons, simple JSON path equality
+and collection membership assertions, duration assertions, and selected-span
+count rules. Generated variables have no default and are supplied with
 `LAMPLIGHT_VAR_<NAME>` or `--var NAME=VALUE`.
 
 The command refuses to overwrite `.wick` files unless `--force` is supplied.
-It rejects unsupported resource types, triggers, selector chains, assertion
-operators, and values instead of silently discarding them. A warning is
-printed when Tracetest's “assert every selected span” behavior is approximated
-by Lamplight's matching-span quantity rule; review those generated checks.
+It rejects unsupported constructs inside importable tests instead of silently
+discarding them. Tracetest's “assert every selected span” behavior maps directly
+to `span_assertions`: the quantity rule counts every span selected by `matching`,
+and every assertion must pass for every selected span.
 
 ## 14. Execution and failure semantics
 

@@ -72,6 +72,108 @@ func TestPrettyMarkersCoverStatusesAndColorModes(t *testing.T) {
 	}
 }
 
+func TestPrettyRendererMakesErrorsExplicitAndActionable(t *testing.T) {
+	run := model.RunResult{
+		RunID: "run", Status: model.StatusError, StartedAt: time.Date(2026, 8, 20, 12, 0, 0, 0, time.UTC),
+		Summary: model.RunSummary{Errors: 1},
+		Tests: []model.TestResult{{
+			Name: "run", Status: model.StatusError,
+			Error: &model.Diagnostic{Code: "datasource_connection", Message: "lookup secret: no such host"},
+			Steps: []model.StepResult{{
+				Name: "request", Status: model.StatusError,
+				Error: &model.Diagnostic{Code: "http_execution", Message: "connect: connection refused"},
+			}},
+		}},
+	}
+
+	output, err := NewPrettyRenderer(false, result.NewRedactor("secret")).Render(run)
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(output)
+	for _, expected := range []string{
+		"Error: Lamplight could not connect to the trace datasource.",
+		"Details: lookup [REDACTED]: no such host",
+		"Docker service names only resolve inside their Docker network",
+		"Error: The test's HTTP request could not be completed.",
+		"Make sure the target service is running",
+	} {
+		if !strings.Contains(text, expected) {
+			t.Errorf("pretty output missing %q:\n%s", expected, text)
+		}
+	}
+	if strings.Contains(text, "secret") {
+		t.Fatalf("pretty output leaked secret: %s", text)
+	}
+}
+
+func TestFriendlyDiagnosticUsesAuthoredSuggestionAndFallback(t *testing.T) {
+	summary, suggestion := friendlyDiagnostic(&model.Diagnostic{Code: "datasource_connection", Message: "unknown", Suggestion: "fix it this way"})
+	if summary == "" || suggestion != "fix it this way" {
+		t.Fatalf("friendlyDiagnostic() = %q, %q", summary, suggestion)
+	}
+	summary, suggestion = friendlyDiagnostic(&model.Diagnostic{Code: "custom", Message: "boom"})
+	if summary != "Run error [custom]." || suggestion != "" {
+		t.Fatalf("fallback = %q, %q", summary, suggestion)
+	}
+}
+
+func TestFriendlyDiagnosticExplainsUnavailableKafkaBroker(t *testing.T) {
+	summary, suggestion := friendlyDiagnostic(&model.Diagnostic{
+		Code:    "trigger_execution",
+		Message: "create kafka producer: kafka: client has run out of available brokers to talk to: dial tcp [::1]:9092: connect: connection refused",
+	})
+	if summary != "Lamplight could not connect to a Kafka broker." {
+		t.Fatalf("summary = %q", summary)
+	}
+	for _, expected := range []string{"Kafka is running", "host-published", "different host port"} {
+		if !strings.Contains(suggestion, expected) {
+			t.Errorf("suggestion %q missing %q", suggestion, expected)
+		}
+	}
+}
+
+func TestPrettyRendererShowsEveryCheckInCancelledStepAsCancelled(t *testing.T) {
+	run := model.RunResult{
+		RunID: "run", Status: model.StatusCancelled, StartedAt: time.Date(2026, 8, 20, 12, 0, 0, 0, time.UTC),
+		Summary: model.RunSummary{Errors: 1},
+		Tests: []model.TestResult{{
+			Name: "cancelled test", Status: model.StatusCancelled,
+			Steps: []model.StepResult{{
+				Name: "request", Status: model.StatusCancelled,
+				Checks: []model.CheckResult{
+					{Name: "already passed", Status: model.StatusPassed},
+					{Name: "still pending", Status: model.StatusCancelled, Reason: "cancelled"},
+				},
+			}},
+		}},
+	}
+
+	output, err := NewPrettyRenderer(false).Render(run)
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(output)
+	for _, expected := range []string{
+		"■ already passed — completed before cancellation",
+		"■ still pending — cancelled",
+	} {
+		if !strings.Contains(text, expected) {
+			t.Errorf("pretty output missing %q:\n%s", expected, text)
+		}
+	}
+	if strings.Contains(text, "✓ already passed") {
+		t.Fatalf("cancelled step rendered a green passed check:\n%s", text)
+	}
+	colored, err := NewPrettyRenderer(true).Render(run)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(colored), NewPrettyRenderer(true).statusMarker(model.StatusCancelled)+" already passed") {
+		t.Fatalf("cancelled check did not use the warning-colored marker: %q", colored)
+	}
+}
+
 func (r *PrettyRenderer) statusMarkerWithoutColor(status model.Status) string {
 	copy := *r
 	copy.Color = false

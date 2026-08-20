@@ -70,6 +70,7 @@ type DatasourceDefinition struct {
 	TLSSkipVerify     bool
 	ObservationWindow time.Duration
 	SettleWindow      time.Duration
+	PollingInterval   time.Duration
 }
 
 // SupportedDatasourceKinds is the public set of tracing backends inherited

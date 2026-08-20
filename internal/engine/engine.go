@@ -13,6 +13,7 @@ import (
 	"github.com/hashicorp/hcl/v2"
 	"github.com/zclconf/go-cty/cty"
 	ctyjson "github.com/zclconf/go-cty/cty/json"
+	"lamplight/internal/debuglog"
 	"lamplight/internal/expr"
 	"lamplight/internal/model"
 	"lamplight/internal/poller"
@@ -24,32 +25,45 @@ type Engine struct {
 	Triggers     model.TriggerExecutor
 	TraceFactory model.TraceContextFactory
 	Clock        model.Clock
+	FailFast     bool
+	Progress     ProgressFunc
 }
 
 func (e *Engine) Run(ctx context.Context, project *model.Project) model.RunResult {
 	started := time.Now()
 	run := model.RunResult{SchemaVersion: 1, RunID: randomID(), StartedAt: started, Tests: []model.TestResult{}}
+	debuglog.Debug(ctx, "engine run started", "run_id", run.RunID)
+	e.progress(ProgressEvent{Kind: ProgressRunStarted, RunID: run.RunID, TestsTotal: len(projectTests(project))})
 	if project == nil || project.Definition == nil || e.HTTP == nil {
 		run.Status = model.StatusError
 		run.Summary.Errors = 1
 		return run
 	}
 	if needsDatasource(project.Tests) {
+		debuglog.Debug(ctx, "testing datasource connection")
+		e.progress(ProgressEvent{Kind: ProgressDatasourceStarted, RunID: run.RunID})
 		if project.Datasource == nil {
+			e.progress(ProgressEvent{Kind: ProgressDatasourceCompleted, RunID: run.RunID, Status: model.StatusError})
 			return technicalRun(run, "datasource_required", "selected tests contain span checks but no datasource is configured")
 		}
 		if err := project.Datasource.TestConnection(ctx); err != nil {
+			e.progress(ProgressEvent{Kind: ProgressDatasourceCompleted, RunID: run.RunID, Status: model.StatusError})
 			return technicalRun(run, "datasource_connection", err.Error())
 		}
+		e.progress(ProgressEvent{Kind: ProgressDatasourceCompleted, RunID: run.RunID, Status: model.StatusPassed})
 	}
 	for index, test := range project.Tests {
 		if ctx.Err() != nil {
 			run.Tests = append(run.Tests, cancelledTests(project.Tests[index:])...)
 			break
 		}
-		tr, technical := e.runTest(ctx, project, test)
+		debuglog.Debug(ctx, "test started", "name", test.Name, "steps", len(test.Steps))
+		e.progress(ProgressEvent{Kind: ProgressTestStarted, RunID: run.RunID, TestName: test.Name})
+		tr, _ := e.runTest(ctx, project, test)
+		debuglog.Debug(ctx, "test completed", "name", test.Name, "status", tr.Status, "duration_ms", tr.DurationMS)
+		e.progress(ProgressEvent{Kind: ProgressTestCompleted, RunID: run.RunID, TestName: test.Name, Status: tr.Status, DurationMS: tr.DurationMS})
 		run.Tests = append(run.Tests, tr)
-		if technical {
+		if tr.Status == model.StatusCancelled || (e.FailFast && tr.Status != model.StatusPassed) {
 			run.Tests = append(run.Tests, skippedTests(project.Tests[index+1:])...)
 			break
 		}
@@ -57,6 +71,19 @@ func (e *Engine) Run(ctx context.Context, project *model.Project) model.RunResul
 	run.DurationMS = time.Since(started).Milliseconds()
 	run = result.AggregateRun(run)
 	return run
+}
+
+func projectTests(project *model.Project) []model.TestDefinition {
+	if project == nil {
+		return nil
+	}
+	return project.Tests
+}
+
+func (e *Engine) progress(event ProgressEvent) {
+	if e.Progress != nil {
+		e.Progress(event)
+	}
 }
 
 func (e *Engine) runTest(ctx context.Context, project *model.Project, test model.TestDefinition) (model.TestResult, bool) {
@@ -80,9 +107,13 @@ func (e *Engine) runTest(ctx context.Context, project *model.Project, test model
 func (e *Engine) runStep(ctx context.Context, project *model.Project, step model.StepDefinition, previous map[string]map[string]cty.Value) (model.StepResult, bool) {
 	started := time.Now()
 	sr := model.StepResult{Name: step.Name, ExecutionID: randomID(), Status: model.StatusPassed, Checks: []model.CheckResult{}}
+	debuglog.Debug(ctx, "step started", "name", step.Name, "execution_id", sr.ExecutionID, "trigger", step.Trigger.Kind)
+	e.progress(ProgressEvent{Kind: ProgressStepStarted, StepName: step.Name, Trigger: step.Trigger.Kind})
 	finish := func(status model.Status) (model.StepResult, bool) {
 		sr.Status = status
 		sr.DurationMS = time.Since(started).Milliseconds()
+		debuglog.Debug(ctx, "step completed", "name", step.Name, "status", status, "duration_ms", sr.DurationMS, "checks", len(sr.Checks))
+		e.progress(ProgressEvent{Kind: ProgressStepCompleted, StepName: step.Name, Trigger: step.Trigger.Kind, Status: status, DurationMS: sr.DurationMS})
 		return sr, status == model.StatusError || status == model.StatusCancelled
 	}
 	if ctx.Err() != nil {
@@ -105,6 +136,7 @@ func (e *Engine) runStep(ctx context.Context, project *model.Project, step model
 	stepsValue := stepsCTY(previous)
 	var response model.Response
 	var err error
+	var triggerStarted time.Time
 	executionCode := "trigger_execution"
 	if step.Trigger.Kind == "" || step.Trigger.Kind == model.TriggerHTTP {
 		executionCode = "http_execution"
@@ -114,6 +146,8 @@ func (e *Engine) runStep(ctx context.Context, project *model.Project, step model
 			return finish(model.StatusError)
 		}
 		sr.Request = &req
+		triggerStarted = time.Now()
+		e.progress(ProgressEvent{Kind: ProgressTriggerStarted, StepName: step.Name, Trigger: model.TriggerHTTP})
 		response, err = e.HTTP.Execute(ctx, req, project.HTTPClient, trace)
 	} else {
 		if e.Triggers == nil {
@@ -135,12 +169,20 @@ func (e *Engine) runStep(ctx context.Context, project *model.Project, step model
 			sr.TraceID = id
 		}
 		sr.Trigger = &req
+		triggerStarted = time.Now()
+		e.progress(ProgressEvent{Kind: ProgressTriggerStarted, StepName: step.Name, Trigger: req.Kind})
 		response, err = e.Triggers.Execute(ctx, req, project.HTTPClient, trace)
 	}
+	triggerStatus := model.StatusPassed
+	if err != nil {
+		triggerStatus = model.StatusError
+	}
+	e.progress(ProgressEvent{Kind: ProgressTriggerCompleted, StepName: step.Name, Trigger: triggerKind(step), Status: triggerStatus, StatusCode: response.StatusCode, DurationMS: time.Since(triggerStarted).Milliseconds()})
 	if err != nil {
 		sr.Error = diagnostic(executionCode, err.Error())
 		return finish(model.StatusError)
 	}
+	debuglog.Debug(ctx, "step request completed", "name", step.Name, "status_code", response.StatusCode, "response_bytes", len(response.Body))
 	sr.Response = &response
 
 	outputs := map[string]cty.Value{}
@@ -183,7 +225,7 @@ func (e *Engine) runStep(ctx context.Context, project *model.Project, step model
 		sr.Checks = append(sr.Checks, cr)
 		if check.Spans != nil {
 			definition := check
-			spanChecks = append(spanChecks, poller.SpanCheck{Name: check.Name, Rule: check.Spans.Rule, Match: spanMatcher(definition, response, project.Variables, stepsValue)})
+			spanChecks = append(spanChecks, poller.SpanCheck{Name: check.Name, Rule: check.Spans.Rule, Match: spanMatcher(definition, response, project.Variables, stepsValue), Assertions: spanAssertions(definition, response, project.Variables, stepsValue)})
 		}
 	}
 	if responseFailed {
@@ -191,7 +233,19 @@ func (e *Engine) runStep(ctx context.Context, project *model.Project, step model
 	}
 	if len(spanChecks) > 0 {
 		window, settle := traceWindows(project.Definition.Datasource, step.Checks)
-		polled, err := poller.Poll(ctx, project.Datasource, trace.TraceID, poller.Config{ObservationWindow: window, SettleWindow: settle, Clock: e.Clock}, spanChecks)
+		debuglog.Debug(ctx, "polling trace", "trace_id", trace.TraceID, "checks", len(spanChecks), "observation_window", window, "settle_window", settle)
+		e.progress(ProgressEvent{Kind: ProgressTracePolling, StepName: step.Name, ObservationWindow: window})
+		interval := time.Second
+		if project.Definition.Datasource != nil && project.Definition.Datasource.PollingInterval > 0 {
+			interval = project.Definition.Datasource.PollingInterval
+		}
+		polled, err := poller.Poll(ctx, project.Datasource, trace.TraceID, poller.Config{ObservationWindow: window, SettleWindow: settle, Interval: interval, Clock: e.Clock, Progress: func(progress poller.Progress) {
+			checks := make([]ProgressCheck, len(progress.Checks))
+			for index, check := range progress.Checks {
+				checks[index] = ProgressCheck{Name: check.Name, MatchCount: check.MatchCount, Status: check.Status}
+			}
+			e.progress(ProgressEvent{Kind: ProgressTraceObserved, StepName: step.Name, Attempt: progress.Attempt, SpanCount: progress.SpanCount, Found: progress.Found, Complete: progress.Complete, RetryError: progress.RetryError, Checks: checks})
+		}}, spanChecks)
 		if err != nil {
 			sr.Error = diagnostic("trace_observation", err.Error())
 			return finish(model.StatusError)
@@ -210,6 +264,13 @@ func (e *Engine) runStep(ctx context.Context, project *model.Project, step model
 		}
 	}
 	return finish(sr.Status)
+}
+
+func triggerKind(step model.StepDefinition) model.TriggerKind {
+	if step.Trigger.Kind == "" {
+		return model.TriggerHTTP
+	}
+	return step.Trigger.Kind
 }
 
 func validHex(value string) bool { _, err := hex.DecodeString(value); return err == nil }
@@ -284,25 +345,30 @@ func evaluateRequest(def model.HTTPRequestDefinition, variables map[string]model
 func spanMatcher(check model.CheckDefinition, response model.Response, variables map[string]model.SensitiveValue, steps cty.Value) func(model.Span) (bool, error) {
 	return func(span model.Span) (bool, error) {
 		ctx := expr.SpanContext(span, response, variables, steps)
-		expressions := []hcl.Expression{}
-		if check.Spans.Matching != nil {
-			expressions = append(expressions, check.Spans.Matching)
+		if check.Spans.Matching == nil {
+			return true, nil
 		}
-		for _, name := range sortedExpressions(check.Spans.Assertions) {
-			expressions = append(expressions, check.Spans.Assertions[name])
+		value, diags := expr.Evaluate(check.Spans.Matching, ctx)
+		if diags.HasErrors() {
+			return false, fmt.Errorf("span predicate: %s", diags.Error())
 		}
-		for _, expression := range expressions {
-			value, diags := expr.Evaluate(expression, ctx)
-			if diags.HasErrors() {
-				return false, fmt.Errorf("span predicate: %s", diags.Error())
-			}
-			passed, err := expr.RequireBool(value)
-			if err != nil || !passed {
-				return false, err
-			}
-		}
-		return true, nil
+		return expr.RequireBool(value)
 	}
+}
+
+func spanAssertions(check model.CheckDefinition, response model.Response, variables map[string]model.SensitiveValue, steps cty.Value) []poller.SpanAssertion {
+	assertions := make([]poller.SpanAssertion, 0, len(check.Spans.Assertions))
+	for _, name := range sortedExpressions(check.Spans.Assertions) {
+		expression := check.Spans.Assertions[name]
+		assertions = append(assertions, poller.SpanAssertion{Name: name, Source: model.Range(expression.Range()), Evaluate: func(span model.Span) (bool, error) {
+			value, diags := expr.Evaluate(expression, expr.SpanContext(span, response, variables, steps))
+			if diags.HasErrors() {
+				return false, fmt.Errorf("span assertion: %s", diags.Error())
+			}
+			return expr.RequireBool(value)
+		}})
+	}
+	return assertions
 }
 
 func traceWindows(datasource *model.DatasourceDefinition, checks []model.CheckDefinition) (time.Duration, time.Duration) {

@@ -14,6 +14,7 @@ import (
 	"strings"
 
 	"github.com/IBM/sarama"
+	"lamplight/internal/debuglog"
 	"lamplight/internal/model"
 )
 
@@ -22,6 +23,7 @@ type Executor struct{ HTTP model.HTTPExecutor }
 func New(http model.HTTPExecutor) *Executor { return &Executor{HTTP: http} }
 
 func (e *Executor) Execute(ctx context.Context, request model.TriggerRequest, cfg model.HTTPClientConfig, trace *model.TestTraceContext) (model.Response, error) {
+	debuglog.Debug(ctx, "trigger execution started", "kind", request.Kind)
 	switch request.Kind {
 	case model.TriggerGraphQL:
 		if e.HTTP == nil {

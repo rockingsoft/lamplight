@@ -40,14 +40,33 @@ func (f *recordingHTTP) Execute(ctx context.Context, request model.HTTPRequest, 
 	return f.response, f.err
 }
 
-type engineClock struct{ now time.Time }
+type engineClock struct {
+	now   time.Time
+	waits []time.Duration
+}
 
 func (c *engineClock) Now() time.Time { return c.now }
 func (c *engineClock) After(duration time.Duration) <-chan time.Time {
+	c.waits = append(c.waits, duration)
 	c.now = c.now.Add(duration)
 	result := make(chan time.Time, 1)
 	result <- c.now
 	return result
+}
+
+func TestRunUsesConfiguredPollingInterval(t *testing.T) {
+	step := spanStep(t, model.QuantityRule{Kind: "at_least", Value: 1}, `span.name == "target"`)
+	project := engineProject(step)
+	project.Definition.Datasource = &model.DatasourceDefinition{ObservationWindow: time.Minute, SettleWindow: time.Second, PollingInterval: 250 * time.Millisecond}
+	project.Datasource = &datasource.Fake{Script: []datasource.ScriptedObservation{
+		{Observation: model.TraceObservation{Found: true, Valid: true}},
+		{Observation: model.TraceObservation{Found: true, Valid: true, Complete: true, Spans: []model.Span{{Name: "target"}}}},
+	}}
+	clock := &engineClock{now: time.Unix(0, 0)}
+	run := (&Engine{HTTP: fakeHTTP{response: model.Response{StatusCode: 200}}, TraceFactory: traceFactory{context: model.TestTraceContext{TraceID: "trace"}}, Clock: clock}).Run(context.Background(), project)
+	if run.Status != model.StatusPassed || len(clock.waits) != 1 || clock.waits[0] != 250*time.Millisecond {
+		t.Fatalf("status=%s waits=%v", run.Status, clock.waits)
+	}
 }
 
 func engineProject(step model.StepDefinition) *model.Project {
@@ -98,7 +117,7 @@ func TestRunRejectsInvalidProjectsAndDatasourceFailures(t *testing.T) {
 	}
 }
 
-func TestRunCancellationAndTechnicalErrorSkipRemainingTests(t *testing.T) {
+func TestRunCancellationAndFailFast(t *testing.T) {
 	t.Run("cancelled tests", func(t *testing.T) {
 		ctx, cancel := context.WithCancel(context.Background())
 		cancel()
@@ -110,16 +129,58 @@ func TestRunCancellationAndTechnicalErrorSkipRemainingTests(t *testing.T) {
 		}
 	})
 
-	t.Run("technical error skips later tests", func(t *testing.T) {
-		step := model.StepDefinition{Name: "one", HTTP: model.HTTPRequestDefinition{Method: parseExpr(t, `"GET"`), URL: parseExpr(t, `"http://example.test"`)}, Checks: []model.CheckDefinition{{Name: "needs trace", Spans: &model.SpanCheckDefinition{Rule: model.QuantityRule{Kind: "exactly", Value: 0}}}}}
-		project := engineProject(step)
-		project.Datasource = &datasource.Fake{}
-		project.Tests = []model.TestDefinition{{Name: "first", Steps: []model.StepDefinition{step}}, {Name: "second", Steps: []model.StepDefinition{{Name: "later"}}}}
+	t.Run("technical error continues by default", func(t *testing.T) {
+		bad := model.StepDefinition{Name: "bad", HTTP: model.HTTPRequestDefinition{Method: parseExpr(t, `"GET"`), URL: parseExpr(t, `var.MISSING`)}}
+		good := model.StepDefinition{Name: "good", HTTP: model.HTTPRequestDefinition{Method: parseExpr(t, `"GET"`), URL: parseExpr(t, `"http://example.test"`)}}
+		project := engineProject(bad)
+		project.Tests = []model.TestDefinition{{Name: "first", Steps: []model.StepDefinition{bad}}, {Name: "second", Steps: []model.StepDefinition{good}}}
 		run := (&Engine{HTTP: fakeHTTP{}}).Run(context.Background(), project)
-		if run.Status != model.StatusError || len(run.Tests) != 2 || run.Tests[0].Status != model.StatusError || run.Tests[1].Status != model.StatusSkipped {
+		if run.Status != model.StatusError || len(run.Tests) != 2 || run.Tests[0].Status != model.StatusError || run.Tests[1].Status != model.StatusPassed {
 			t.Fatalf("run=%#v", run)
 		}
 	})
+
+	t.Run("fail fast skips later tests after technical error", func(t *testing.T) {
+		bad := model.StepDefinition{Name: "bad", HTTP: model.HTTPRequestDefinition{Method: parseExpr(t, `"GET"`), URL: parseExpr(t, `var.MISSING`)}}
+		project := engineProject(bad)
+		project.Tests = []model.TestDefinition{{Name: "first", Steps: []model.StepDefinition{bad}}, {Name: "second", Steps: []model.StepDefinition{{Name: "later"}}}}
+		run := (&Engine{HTTP: fakeHTTP{}, FailFast: true}).Run(context.Background(), project)
+		if run.Status != model.StatusError || run.Tests[0].Status != model.StatusError || run.Tests[1].Status != model.StatusSkipped {
+			t.Fatalf("run=%#v", run)
+		}
+	})
+
+	t.Run("fail fast also stops after assertion failure", func(t *testing.T) {
+		failed := model.StepDefinition{Name: "failed", HTTP: model.HTTPRequestDefinition{Method: parseExpr(t, `"GET"`), URL: parseExpr(t, `"http://example.test"`)}, Checks: []model.CheckDefinition{{Name: "status", Response: map[string]hcl.Expression{"ok": parseExpr(t, `response.status_code == 200`)}}}}
+		project := engineProject(failed)
+		project.Tests = []model.TestDefinition{{Name: "first", Steps: []model.StepDefinition{failed}}, {Name: "second", Steps: []model.StepDefinition{{Name: "later"}}}}
+		run := (&Engine{HTTP: fakeHTTP{response: model.Response{StatusCode: 500}}, FailFast: true}).Run(context.Background(), project)
+		if run.Status != model.StatusFailed || run.Tests[0].Status != model.StatusFailed || run.Tests[1].Status != model.StatusSkipped {
+			t.Fatalf("run=%#v", run)
+		}
+	})
+}
+
+func TestRunReportsProgressMilestones(t *testing.T) {
+	step := spanStep(t, model.QuantityRule{Kind: "at_least", Value: 1}, `span.name == "target"`)
+	project := engineProject(step)
+	project.Datasource = &datasource.Fake{Script: []datasource.ScriptedObservation{{Observation: model.TraceObservation{Found: true, Valid: true, Complete: true, Spans: []model.Span{{Name: "target"}}}}}}
+	var events []ProgressEvent
+	run := (&Engine{HTTP: fakeHTTP{response: model.Response{StatusCode: 200}}, TraceFactory: traceFactory{context: model.TestTraceContext{TraceID: "trace"}}, Clock: &engineClock{now: time.Unix(0, 0)}, Progress: func(event ProgressEvent) {
+		events = append(events, event)
+	}}).Run(context.Background(), project)
+	if run.Status != model.StatusPassed {
+		t.Fatalf("run=%#v", run)
+	}
+	want := []ProgressEventKind{ProgressRunStarted, ProgressDatasourceStarted, ProgressDatasourceCompleted, ProgressTestStarted, ProgressStepStarted, ProgressTriggerStarted, ProgressTriggerCompleted, ProgressTracePolling, ProgressTraceObserved, ProgressStepCompleted, ProgressTestCompleted}
+	if len(events) != len(want) {
+		t.Fatalf("events=%#v", events)
+	}
+	for index, kind := range want {
+		if events[index].Kind != kind {
+			t.Errorf("events[%d].Kind=%q want %q", index, events[index].Kind, kind)
+		}
+	}
 }
 
 func TestRunExecutesVariablesOutputsAndSpanChecks(t *testing.T) {
@@ -268,6 +329,18 @@ func TestSpanMatcherAndCheckMerging(t *testing.T) {
 	matched, err = matcher(model.Span{Name: "other", Kind: "server"})
 	if err != nil || matched {
 		t.Fatalf("unmatched=%t err=%v", matched, err)
+	}
+	matched, err = matcher(model.Span{Name: "wanted", Kind: "client"})
+	if err != nil || !matched {
+		t.Fatalf("matching must select independently of assertions: matched=%t err=%v", matched, err)
+	}
+	assertions := spanAssertions(check, model.Response{}, nil, cty.EmptyObjectVal)
+	if len(assertions) != 1 {
+		t.Fatalf("assertions=%#v", assertions)
+	}
+	passed, err := assertions[0].Evaluate(model.Span{Name: "wanted", Kind: "client"})
+	if err != nil || passed {
+		t.Fatalf("assertion passed=%t err=%v", passed, err)
 	}
 	bad := model.CheckDefinition{Name: "bad", Spans: &model.SpanCheckDefinition{Matching: parseExpr(t, `response.status_code`)}}
 	if _, err := spanMatcher(bad, model.Response{}, nil, cty.EmptyObjectVal)(model.Span{}); err == nil {
