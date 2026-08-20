@@ -4,7 +4,9 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -28,6 +30,52 @@ func cliExpr(t *testing.T, source string) hcl.Expression {
 		t.Fatal(diagnostics.Error())
 	}
 	return expression
+}
+
+func TestRemoteExecutorCloseDrainsTrailingRuntimeOutput(t *testing.T) {
+	requestReader, requestWriter := io.Pipe()
+	responseReader, responseWriter := io.Pipe()
+	done := make(chan error, 1)
+
+	go func() {
+		_, _ = io.Copy(io.Discard, requestReader)
+		_ = requestReader.Close()
+		_, err := responseWriter.Write([]byte("runtime teardown output"))
+		_ = responseWriter.CloseWithError(err)
+		done <- err
+	}()
+
+	closed := make(chan error, 1)
+	go func() {
+		closed <- closeRemoteExecutor(context.Background(), requestWriter, responseReader, done)
+	}()
+
+	select {
+	case err := <-closed:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("remote executor close did not drain trailing output")
+	}
+}
+
+func TestRemoteExecutorCloseReturnsAfterCancellation(t *testing.T) {
+	_, requestWriter := io.Pipe()
+	responseReader, responseWriter := io.Pipe()
+	done := make(chan error)
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	started := time.Now()
+	err := closeRemoteExecutor(ctx, requestWriter, responseReader, done)
+	_ = responseWriter.Close()
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("close error = %v, want context canceled", err)
+	}
+	if elapsed := time.Since(started); elapsed > 1500*time.Millisecond {
+		t.Fatalf("canceled close took %s", elapsed)
+	}
 }
 
 func TestMainUsageAndFlagErrors(t *testing.T) {

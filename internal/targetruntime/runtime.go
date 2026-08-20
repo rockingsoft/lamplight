@@ -94,13 +94,17 @@ func (r Launcher) dockerCompose(ctx context.Context, command func(context.Contex
 
 func (r Launcher) kubernetes(ctx context.Context, command func(context.Context, string, ...string) *exec.Cmd, target model.TargetDefinition, input io.Reader, streams IO) error {
 	name := fmt.Sprintf("lamplight-run-%d", time.Now().Unix())
-	args := []string{}
+	placement := []string{}
 	if target.Kubernetes.Context != "" {
-		args = append(args, "--context", target.Kubernetes.Context)
+		placement = append(placement, "--context", target.Kubernetes.Context)
 	}
 	if target.Kubernetes.Namespace != "" {
-		args = append(args, "--namespace", target.Kubernetes.Namespace)
+		placement = append(placement, "--namespace", target.Kubernetes.Namespace)
 	}
+	deleteArgs := append(append([]string{}, placement...), "delete", "pod", name, "--ignore-not-found=true", "--wait=false")
+	defer func() { _ = command(context.WithoutCancel(ctx), "kubectl", deleteArgs...).Run() }()
+
+	args := append([]string{}, placement...)
 	args = append(args, "run", name, "--attach", "--stdin", "--rm", "--restart=Never", "--image", buildinfo.ExecutorImage())
 	if target.Kubernetes.ServiceAccount != "" {
 		override, _ := json.Marshal(map[string]any{"spec": map[string]any{"serviceAccountName": target.Kubernetes.ServiceAccount}})

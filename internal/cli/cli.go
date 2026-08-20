@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"time"
 
 	"github.com/hashicorp/hcl/v2"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
@@ -503,6 +504,9 @@ func run(ctx context.Context, args []string, streams IO) int {
 	runResult := eng.Run(ctx, runtimeProject)
 	if closeRemote != nil {
 		if err := closeRemote(); err != nil {
+			if ctx.Err() != nil {
+				return 130
+			}
 			writeLine(streams.Err, "error: executor:", err)
 			return targetruntime.ExitCode(err)
 		}
@@ -593,12 +597,37 @@ func startRemoteExecutor(ctx context.Context, target model.TargetDefinition, con
 	}()
 	client := executorproto.NewClient(requestWriter, responseReader, datasourceConfig)
 	closeExecutor := func() error {
-		_ = requestWriter.Close()
-		err := <-done
-		_ = responseReader.Close()
-		return err
+		return closeRemoteExecutor(ctx, requestWriter, responseReader, done)
 	}
 	return client, closeExecutor, nil
+}
+
+func closeRemoteExecutor(ctx context.Context, requestWriter *io.PipeWriter, responseReader *io.PipeReader, done <-chan error) error {
+	_ = requestWriter.Close()
+	// The runtime may emit trailing output while it tears down its container
+	// or Pod. Drain it so os/exec can finish copying stdout before Wait
+	// returns; waiting first deadlocks when no protocol reader remains.
+	drained := make(chan struct{})
+	go func() {
+		_, _ = io.Copy(io.Discard, responseReader)
+		close(drained)
+	}()
+
+	select {
+	case err := <-done:
+		<-drained
+		_ = responseReader.Close()
+		return err
+	case <-ctx.Done():
+		// CommandContext kills the runtime process. Closing the response side
+		// also releases any os/exec copy goroutine that outlives the child.
+		_ = responseReader.CloseWithError(ctx.Err())
+		select {
+		case <-done:
+		case <-time.After(time.Second):
+		}
+		return ctx.Err()
+	}
 }
 
 func evalString(expression hcl.Expression, values map[string]model.SensitiveValue) (string, error) {

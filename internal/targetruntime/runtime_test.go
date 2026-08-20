@@ -56,7 +56,7 @@ func TestKubernetesUsesConfiguredPlacement(t *testing.T) {
 	}
 	commands, _ := os.ReadFile(log)
 	got := string(commands)
-	for _, want := range []string{"--context prod", "--namespace shop", "run lamplight-run-", "--image lamplight:test", "serviceAccountName", "lamplight executor"} {
+	for _, want := range []string{"--context prod", "--namespace shop", "run lamplight-run-", "--image lamplight:test", "serviceAccountName", "lamplight executor", "delete pod lamplight-run-", "--ignore-not-found=true", "--wait=false"} {
 		if !strings.Contains(got, want) {
 			t.Fatalf("command %q missing %q", got, want)
 		}
