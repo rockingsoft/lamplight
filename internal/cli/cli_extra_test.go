@@ -79,13 +79,25 @@ func TestRemoteExecutorCloseReturnsAfterCancellation(t *testing.T) {
 }
 
 func TestMainUsageAndFlagErrors(t *testing.T) {
-	for _, args := range [][]string{nil, {"unknown"}, {"list"}, {"list", "nope"}, {"validate", "--unknown"}, {"run", "--unknown"}, {"init", "--unknown"}, {"run", "one", "two"}, {"migrate"}, {"migrate", "other"}, {"migrate", "tracetest"}} {
+	for _, args := range [][]string{nil, {"unknown"}, {"version", "extra"}, {"list"}, {"list", "nope"}, {"validate", "--unknown"}, {"run", "--unknown"}, {"init", "--unknown"}, {"run", "one", "two"}, {"migrate"}, {"migrate", "other"}, {"migrate", "tracetest"}} {
 		var out, stderr bytes.Buffer
 		if code := Main(context.Background(), args, IO{Out: &out, Err: &stderr}); code != 1 {
 			t.Fatalf("args=%v code=%d out=%q err=%q", args, code, out.String(), stderr.String())
 		}
 		if stderr.Len() == 0 {
 			t.Fatalf("args=%v produced no diagnostic", args)
+		}
+	}
+}
+
+func TestMainVersion(t *testing.T) {
+	for _, args := range [][]string{{"version"}, {"--version"}} {
+		var stdout, stderr bytes.Buffer
+		if code := Main(context.Background(), args, IO{Out: &stdout, Err: &stderr}); code != 0 {
+			t.Fatalf("args=%v code=%d stderr=%q", args, code, stderr.String())
+		}
+		if stdout.String() != "lamplight dev\n" || stderr.Len() != 0 {
+			t.Fatalf("args=%v stdout=%q stderr=%q", args, stdout.String(), stderr.String())
 		}
 	}
 }
