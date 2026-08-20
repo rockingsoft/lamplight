@@ -9,7 +9,7 @@ and compatibility decisions can be discussed early.
 
 Requirements:
 
-- Go 1.23 or newer;
+- Go 1.26 or newer;
 - Git;
 - `make`;
 - GoReleaser for local release builds;

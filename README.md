@@ -57,7 +57,7 @@ upgrading once releases exist.
 
 Requirements:
 
-- Go 1.23 or newer.
+- Go 1.26 or newer.
 - `make` for the repository development commands.
 
 ```sh
