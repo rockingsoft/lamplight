@@ -10,7 +10,8 @@ permissions:
   contents: read
 
 jobs:
-  test-and-build:
+  unit:
+    name: Unit tests
     runs-on: ubuntu-latest
     steps:
       - name: Check out repository
@@ -24,28 +25,130 @@ jobs:
           go-version-file: go.mod
           cache: true
 
-      - name: Verify dependencies
-        run: go mod verify
+      - name: Run unit tests
+        run: make deps fmt-check test
 
-      - name: Check formatting
+  quality:
+    name: Static and race checks
+    needs: unit
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+
+      - name: Set up Go
+        uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Run static and race checks
+        run: make vet lint test-race
+
+  e2e:
+    name: E2E (${{ matrix.runtime }})
+    needs: unit
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        runtime:
+          - compose
+          - k3s
+    steps:
+      - name: Check out Lamplight
+        uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+
+      - name: Check out Pokeshop
+        uses: actions/checkout@v5
+        with:
+          repository: rockingsoft/pokeshop
+          path: pokeshop
+
+      - name: Set up Go
+        uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Set up kubectl
+        if: matrix.runtime == 'k3s'
+        uses: azure/setup-kubectl@v4
+        with:
+          version: v1.35.5
+
+      - name: Build matching CLI and executor image
+        env:
+          VERSION: 0.0.0-e2e-${{ github.sha }}
         run: |
-          unformatted="$(gofmt -l .)"
-          if [ -n "$unformatted" ]; then
-            echo "The following files are not formatted with gofmt:"
-            echo "$unformatted"
+          set -eu
+          bin_dir="$RUNNER_TEMP/lamplight-bin"
+          image_context="$RUNNER_TEMP/lamplight-image"
+          arch="$(go env GOARCH)"
+          mkdir -p "$bin_dir" "$image_context/linux/$arch"
+          CGO_ENABLED=0 go build \
+            -trimpath \
+            -ldflags "-s -w -X lamplight/internal/buildinfo.Version=$VERSION" \
+            -o "$bin_dir/lamplight" \
+            ./cmd/lamplight
+          install -m 0755 "$bin_dir/lamplight" "$image_context/linux/$arch/lamplight"
+          install -m 0644 Dockerfile "$image_context/Dockerfile"
+          docker build \
+            --build-arg "TARGETPLATFORM=linux/$arch" \
+            --tag "ghcr.io/rockingsoft/lamplight:$VERSION" \
+            "$image_context"
+          echo "$bin_dir" >> "$GITHUB_PATH"
+
+      - name: Run Lamplight E2E suite
+        working-directory: pokeshop
+        env:
+          RUNTIME: ${{ matrix.runtime }}
+        run: |
+          set +e
+          if [ "$RUNTIME" = k3s ]; then
+            LAMPLIGHT_OUTPUT=json make test-k3s > lamplight-result.json
+          else
+            LAMPLIGHT_OUTPUT=json make test > lamplight-result.json
+          fi
+          exit_code=$?
+          set -e
+
+          echo "Lamplight exit code: $exit_code"
+          jq . lamplight-result.json
+
+          if [ "$exit_code" -ne 0 ]; then
+            echo "Expected Lamplight to exit with code 0" >&2
             exit 1
           fi
 
-      - name: Run go vet
-        run: go vet ./...
+          jq -e '
+            .schema_version == 1 and
+            .status == "passed" and
+            (.tests | length) == 5 and
+            all(.tests[]; .status == "passed") and
+            ([.tests[].name] | sort) == ([
+              "Import a Pokemon reading a Stream",
+              "Import a Pokemon using API and MQ Worker",
+              "List Pokemons",
+              "List Pokemons using gRPC",
+              "Pokeshop - Add"
+            ] | sort)
+          ' lamplight-result.json > /dev/null
 
-      - name: Run golangci-lint
-        uses: golangci/golangci-lint-action@v9
+      - name: Upload Lamplight result
+        if: always()
+        uses: actions/upload-artifact@v4
         with:
-          version: v2.12.2
+          name: lamplight-result-${{ matrix.runtime }}
+          path: pokeshop/lamplight-result.json
+          if-no-files-found: warn
 
-      - name: Run tests with race detector
-        run: go test -race ./...
-
-      - name: Validate and build release artifacts
-        run: make build
+      - name: Clean up Pokeshop
+        if: always()
+        working-directory: pokeshop
+        run: make clean
