@@ -52,15 +52,17 @@ project-directory/
     └── health.wick
 ```
 
-The root file contains exactly one `project` block and optionally one Tempo
-`datasource` block. Files discovered below `project.base_dir` may contain
-`variable` and `test` blocks in any directory arrangement.
+The root file contains exactly one `project` block, optionally one tracing
+`datasource`, shared `variable` blocks, and named `target` blocks. Files
+discovered below `project.base_dir` may also contain `variable` and `test`
+blocks in any directory arrangement.
 
 The public model has five main concepts:
 
 ```text
 project
 ├── optional datasource
+├── execution targets
 └── tests
     └── ordered steps
         ├── one inline http_request
@@ -79,8 +81,9 @@ Exactly one `project` block is required in `.lamplight`.
 
 ```hcl
 project {
-  base_dir = "./lamplight"
-  output   = "pretty"
+  base_dir      = "./lamplight"
+  output        = "pretty"
+  default_target = "compose"
 
   http_client {
     timeout                  = duration("30s")
@@ -93,17 +96,83 @@ project {
 }
 ```
 
+`default_target` is optional. Without it, `run` uses the implicit `local`
+target even when other targets are declared. `--target` takes precedence over
+the project default.
+
+### 2.2 Execution targets
+
+A target supplies a runtime and environment-specific variable values without
+changing the tests:
+
+```hcl
+variable "BASE_URL" { type = string }
+variable "TEMPO_ENDPOINT" { type = string }
+
+target "compose" {
+  runtime = "docker_compose"
+
+  docker_compose {
+    services = ["api", "tempo"]
+  }
+
+  variables = {
+    BASE_URL       = "http://api:8080"
+    TEMPO_ENDPOINT = "http://tempo:3200"
+  }
+}
+
+target "cluster" {
+  runtime = "kubernetes"
+
+  kubernetes {
+    context         = "production"
+    namespace       = "pokeshop"
+    service_account = "lamplight-runner"
+  }
+
+  variables = {
+    BASE_URL       = "http://api.pokeshop.svc.cluster.local:8080"
+    TEMPO_ENDPOINT = "http://tempo.monitoring.svc.cluster.local:3200"
+  }
+}
+```
+
+`docker_compose` inspects the running Compose project, creates a read-only
+ephemeral Lamplight executor, and connects it to the networks used by the
+selected services. The engine, test evaluation, polling, artifacts, and output
+remain in the local CLI. Only evaluated trigger requests and datasource
+operations cross the versioned stdio protocol. Lamplight does not send project
+files, edit Compose files, or publish ports. `project` is an optional Compose
+project name and `services` optionally restricts network discovery; by default
+all running services in the current project are used.
+
+`kubernetes` creates an attached, ephemeral executor Pod through `kubectl`. `context`,
+`namespace`, and `service_account` are optional; omitted context and namespace
+use the active kubectl settings. The Pod is removed after execution.
+
+Both runtimes choose the executor image matching the CLI build automatically.
+Development builds can set `LAMPLIGHT_RUNNER_IMAGE`; this is an operator escape
+hatch, not project configuration.
+
+Target variables must refer to declared variables and match their types. Value
+precedence is `--var`, `LAMPLIGHT_VAR_*`, selected target, then the variable
+default. Targets cannot assign sensitive variables. Variables and expressions
+are resolved locally; only values required by an evaluated trigger or
+datasource operation are sent to the executor.
+
 Properties:
 
 | Property | Required | Type | Default | Runtime expressions | Description |
 | --- | --- | --- | --- | --- | --- |
 | `base_dir` | yes | literal string | — | no | Directory recursively searched for Lamplight DSL files. Resolved relative to `.lamplight`. |
 | `output` | no | literal string enum | `"pretty"` | no | One of `pretty`, `text`, or `json`. |
+| `default_target` | no | literal string | `local` | no | Named target used by `run` when `--target` is omitted. |
 
 `base_dir` must exist and be a directory when the project is loaded. It cannot
 reference `var` because discovery happens before runtime variable resolution.
 
-### 2.2 `http_client` block
+### 2.3 `http_client` block
 
 At most one `http_client` block is allowed inside `project`.
 

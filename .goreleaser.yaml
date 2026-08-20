@@ -19,7 +19,20 @@ builds:
     flags:
       - -trimpath
     ldflags:
-      - -s -w
+      - -s -w -X lamplight/internal/buildinfo.Version={{ .Version }}
+
+dockers_v2:
+  - id: lamplight
+    ids:
+      - lamplight
+    dockerfile: Dockerfile
+    images:
+      - ghcr.io/rockingsoft/lamplight
+    tags:
+      - "{{ .Version }}"
+    platforms:
+      - linux/amd64
+      - linux/arm64
 
 archives:
   - id: lamplight

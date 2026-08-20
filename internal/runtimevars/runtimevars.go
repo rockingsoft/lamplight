@@ -21,6 +21,9 @@ type Input struct {
 	Vars map[string]string
 	// Environment is read once by the caller. Nil uses the process environment.
 	Environment map[string]string
+	// Target contains typed, non-secret defaults from the selected target.
+	// Explicit CLI and environment values take precedence.
+	Target map[string]cty.Value
 }
 
 // Resolve resolves exactly the variables referenced by expressions. Supplying
@@ -51,7 +54,8 @@ func Resolve(definitions map[string]model.VariableDefinition, input Input, expre
 			continue
 		}
 		value, found, source := rawValue(name, input)
-		if !found && !definition.HasDefault {
+		targetValue, targetFound := input.Target[name]
+		if !found && !targetFound && !definition.HasDefault {
 			diags = append(diags, diagnostic.Error(diagnostic.CodeVariable, fmt.Sprintf("required variable %q has no value", name), sourceRange(definition), "set --var "+name+"=… or LAMPLIGHT_VAR_"+name))
 			continue
 		}
@@ -59,6 +63,9 @@ func Resolve(definitions map[string]model.VariableDefinition, input Input, expre
 		var err error
 		if found {
 			parsed, err = parse(value, definition.Type)
+		} else if targetFound {
+			source = "target"
+			parsed, err = typedValue(targetValue, definition.Type)
 		} else {
 			source = "default"
 			parsed, err = defaultValue(definition)
@@ -74,6 +81,28 @@ func Resolve(definitions map[string]model.VariableDefinition, input Input, expre
 		result[name] = model.SensitiveValue{Value: parsed, Sensitive: definition.Sensitive}
 	}
 	return result, diags
+}
+
+func typedValue(value cty.Value, typeName string) (cty.Value, error) {
+	if !value.IsKnown() || value.IsNull() {
+		return cty.NilVal, fmt.Errorf("target value is null or unknown")
+	}
+	switch typeName {
+	case "", "string":
+		if value.Type() != cty.String {
+			return cty.NilVal, fmt.Errorf("target value must be a string")
+		}
+	case "int", "duration":
+		if value.Type() != cty.Number {
+			return cty.NilVal, fmt.Errorf("target value must be a number")
+		}
+		if _, accuracy := value.AsBigFloat().Int64(); accuracy != 0 {
+			return cty.NilVal, fmt.Errorf("target value must be an integer")
+		}
+	default:
+		return cty.NilVal, fmt.Errorf("unsupported type %q", typeName)
+	}
+	return value, nil
 }
 
 func rawValue(name string, input Input) (string, bool, string) {

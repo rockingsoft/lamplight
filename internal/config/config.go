@@ -86,6 +86,8 @@ type Config struct {
 	ConfigFile    *hcl.File
 	ProjectRange  hcl.Range
 	DatasourceRaw *hcl.Block
+	DefinitionRaw hcl.Blocks
+	DefaultTarget string
 }
 
 // Load parses the root configuration and resolves its filesystem-only values.
@@ -99,7 +101,7 @@ func Load(options Options) (*Config, []model.Diagnostic) {
 	if hclDiags.HasErrors() {
 		return nil, diagnostic.FromHCL(hclDiags, diagnostic.CodeParse)
 	}
-	content, hclDiags := file.Body.Content(&hcl.BodySchema{Blocks: []hcl.BlockHeaderSchema{{Type: "project"}, {Type: "datasource", LabelNames: []string{"kind"}}}})
+	content, hclDiags := file.Body.Content(&hcl.BodySchema{Blocks: []hcl.BlockHeaderSchema{{Type: "project"}, {Type: "datasource", LabelNames: []string{"kind"}}, {Type: "variable", LabelNames: []string{"name"}}, {Type: "target", LabelNames: []string{"name"}}}})
 	diags = append(diags, diagnostic.FromHCL(hclDiags, diagnostic.CodeSchema)...)
 	var project *hcl.Block
 	for _, block := range content.Blocks {
@@ -117,11 +119,15 @@ func Load(options Options) (*Config, []model.Diagnostic) {
 		return nil, diags
 	}
 	projectContent, projectDiags := project.Body.Content(&hcl.BodySchema{
-		Attributes: []hcl.AttributeSchema{{Name: "base_dir", Required: true}, {Name: "output"}},
+		Attributes: []hcl.AttributeSchema{{Name: "base_dir", Required: true}, {Name: "output"}, {Name: "default_target"}},
 		Blocks:     []hcl.BlockHeaderSchema{{Type: "http_client"}},
 	})
 	diags = append(diags, diagnostic.FromHCL(projectDiags, diagnostic.CodeSchema)...)
-	baseExpr := projectContent.Attributes["base_dir"].Expr
+	baseAttribute, hasBaseDir := projectContent.Attributes["base_dir"]
+	if !hasBaseDir {
+		return nil, diags
+	}
+	baseExpr := baseAttribute.Expr
 	if len(baseExpr.Variables()) != 0 {
 		diags = append(diags, diagnostic.Error(diagnostic.CodeConfig, "project.base_dir cannot depend on runtime values", baseExpr.Range(), "use a literal path"))
 	}
@@ -148,6 +154,11 @@ func Load(options Options) (*Config, []model.Diagnostic) {
 	if output != "pretty" && output != "text" && output != "json" {
 		diags = append(diags, diagnostic.Error(diagnostic.CodeConfig, fmt.Sprintf("project.output must be pretty, text, or json; got %q", output), project.DefRange, "choose pretty, text, or json"))
 	}
+	defaultTarget := ""
+	if attr, ok := projectContent.Attributes["default_target"]; ok {
+		defaultTarget, valueDiags = literalString(attr.Expr)
+		diags = append(diags, valueDiags...)
+	}
 	httpConfig, proxyExpr, httpDiags := parseHTTPClient(projectContent.Blocks, project.DefRange)
 	diags = append(diags, httpDiags...)
 	var datasource *hcl.Block
@@ -161,7 +172,13 @@ func Load(options Options) (*Config, []model.Diagnostic) {
 			datasource = block
 		}
 	}
-	return &Config{Paths: paths, BaseDir: base, Output: output, HTTPClient: httpConfig, ProxyExpr: proxyExpr, ConfigFile: file, ProjectRange: project.DefRange, DatasourceRaw: datasource}, diags
+	var definitions hcl.Blocks
+	for _, block := range content.Blocks {
+		if block.Type == "variable" || block.Type == "target" {
+			definitions = append(definitions, block)
+		}
+	}
+	return &Config{Paths: paths, BaseDir: base, Output: output, HTTPClient: httpConfig, ProxyExpr: proxyExpr, ConfigFile: file, ProjectRange: project.DefRange, DatasourceRaw: datasource, DefinitionRaw: definitions, DefaultTarget: defaultTarget}, diags
 }
 
 func literalString(expression hcl.Expression) (string, []model.Diagnostic) {

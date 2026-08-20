@@ -45,6 +45,9 @@ func New(options Options) *mcp.Server {
 	mcp.AddTool(server, &mcp.Tool{Name: "lamplight_write_test_file", Description: "Create or replace one .wick definition file. Replacements require the SHA-256 returned by read/list, and invalid project changes are rolled back."}, svc.writeFile)
 	mcp.AddTool(server, &mcp.Tool{Name: "lamplight_delete_test_file", Description: "Delete one .wick definition file using an expected SHA-256 precondition. The deletion is rolled back if it makes the project invalid."}, svc.deleteFile)
 	mcp.AddTool(server, &mcp.Tool{Name: "lamplight_format_test_file", Description: "Format one .wick file using the canonical HCL formatter. A replacement requires the current SHA-256."}, svc.formatFile)
+	mcp.AddTool(server, &mcp.Tool{Name: "lamplight_read_project_config", Description: "Read the active .lamplight project configuration, including project defaults, variables, targets, and runtime settings."}, svc.readProjectConfig)
+	mcp.AddTool(server, &mcp.Tool{Name: "lamplight_write_project_config", Description: "Replace the active .lamplight configuration. Requires its current SHA-256, formats the HCL, validates the complete project, and rolls back invalid changes."}, svc.writeProjectConfig)
+	mcp.AddTool(server, &mcp.Tool{Name: "lamplight_format_project_config", Description: "Format the active .lamplight configuration using the canonical HCL formatter. Requires its current SHA-256."}, svc.formatProjectConfig)
 	mcp.AddTool(server, &mcp.Tool{Name: "lamplight_lint_project", Description: "Validate the complete project and report .wick files that are not canonically formatted. Does not execute tests or modify files."}, svc.lint)
 	mcp.AddTool(server, &mcp.Tool{Name: "lamplight_run_tests", Description: "Run all tests, one named test, or one tag and return the structured Lamplight JSON result."}, svc.run)
 	return server
@@ -61,8 +64,15 @@ type testSummary struct {
 }
 
 type listOutput struct {
-	Tests       []testSummary      `json:"tests"`
-	Diagnostics []model.Diagnostic `json:"diagnostics,omitempty"`
+	Tests         []testSummary      `json:"tests"`
+	DefaultTarget string             `json:"default_target,omitempty"`
+	Targets       []targetSummary    `json:"targets,omitempty"`
+	Diagnostics   []model.Diagnostic `json:"diagnostics,omitempty"`
+}
+
+type targetSummary struct {
+	Name    string `json:"name"`
+	Runtime string `json:"runtime"`
 }
 
 func (s *service) listTests(_ context.Context, _ *mcp.CallToolRequest, _ emptyInput) (*mcp.CallToolResult, listOutput, error) {
@@ -73,6 +83,11 @@ func (s *service) listTests(_ context.Context, _ *mcp.CallToolRequest, _ emptyIn
 	if hasErrors(diags) || def == nil {
 		return toolError("project validation failed", out), out, nil
 	}
+	out.DefaultTarget = def.DefaultTarget
+	for _, target := range def.Targets {
+		out.Targets = append(out.Targets, targetSummary{Name: target.Name, Runtime: target.Runtime})
+	}
+	sort.Slice(out.Targets, func(i, j int) bool { return out.Targets[i].Name < out.Targets[j].Name })
 	for _, test := range def.Tests {
 		data, err := os.ReadFile(test.File)
 		if err != nil {
@@ -212,11 +227,83 @@ func (s *service) formatFile(ctx context.Context, req *mcp.CallToolRequest, in d
 	return s.writeFile(ctx, req, writeInput{Path: in.Path, Content: string(hclwrite.Format(data)), ExpectedSHA256: in.ExpectedSHA256})
 }
 
+func (s *service) readProjectConfig(_ context.Context, _ *mcp.CallToolRequest, _ emptyInput) (*mcp.CallToolResult, fileOutput, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	path, err := s.projectConfigPath()
+	if err != nil {
+		return toolError(err.Error(), fileOutput{}), fileOutput{}, nil
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return nil, fileOutput{}, err
+	}
+	return nil, fileOutput{Path: path, Content: string(data), SHA256: digest(data)}, nil
+}
+
+type configWriteInput struct {
+	Content        string `json:"content" jsonschema:"complete .lamplight HCL content, including project, datasource, variables, and targets"`
+	ExpectedSHA256 string `json:"expected_sha256" jsonschema:"current SHA-256 returned by lamplight_read_project_config"`
+}
+
+func (s *service) writeProjectConfig(_ context.Context, _ *mcp.CallToolRequest, in configWriteInput) (*mcp.CallToolResult, mutationOutput, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	path, err := s.projectConfigPath()
+	if err != nil {
+		return toolError(err.Error(), mutationOutput{}), mutationOutput{}, nil
+	}
+	old, err := os.ReadFile(path)
+	if err != nil {
+		return nil, mutationOutput{}, err
+	}
+	if in.ExpectedSHA256 == "" || in.ExpectedSHA256 != digest(old) {
+		out := mutationOutput{Path: path, SHA256: digest(old)}
+		return toolError("expected_sha256 is missing or does not match the current project configuration", out), out, nil
+	}
+	formatted := hclwrite.Format([]byte(in.Content))
+	if bytes.Equal(old, formatted) {
+		return nil, mutationOutput{Path: path, SHA256: digest(old)}, nil
+	}
+	mode := modeOrDefault(path)
+	if err := atomicWrite(path, formatted, mode); err != nil {
+		return nil, mutationOutput{}, err
+	}
+	_, diags := s.load()
+	if hasErrors(diags) {
+		_ = atomicWrite(path, old, mode)
+		out := mutationOutput{Path: path, SHA256: digest(old), Diagnostics: diags}
+		return toolError("change was rolled back because project validation failed", out), out, nil
+	}
+	return nil, mutationOutput{Path: path, SHA256: digest(formatted), Changed: true, Diagnostics: diags}, nil
+}
+
+type configHashInput struct {
+	ExpectedSHA256 string `json:"expected_sha256" jsonschema:"current SHA-256 returned by lamplight_read_project_config"`
+}
+
+func (s *service) formatProjectConfig(ctx context.Context, req *mcp.CallToolRequest, in configHashInput) (*mcp.CallToolResult, mutationOutput, error) {
+	s.mu.Lock()
+	path, err := s.projectConfigPath()
+	if err != nil {
+		s.mu.Unlock()
+		return toolError(err.Error(), mutationOutput{}), mutationOutput{}, nil
+	}
+	data, err := os.ReadFile(path)
+	s.mu.Unlock()
+	if err != nil {
+		return nil, mutationOutput{}, err
+	}
+	return s.writeProjectConfig(ctx, req, configWriteInput{Content: string(data), ExpectedSHA256: in.ExpectedSHA256})
+}
+
 type lintOutput struct {
-	Valid            bool               `json:"valid"`
-	Files            int                `json:"files"`
-	UnformattedFiles []string           `json:"unformatted_files,omitempty"`
-	Diagnostics      []model.Diagnostic `json:"diagnostics,omitempty"`
+	Valid                    bool               `json:"valid"`
+	Files                    int                `json:"files"`
+	ProjectConfig            string             `json:"project_config,omitempty"`
+	ProjectConfigUnformatted bool               `json:"project_config_unformatted,omitempty"`
+	UnformattedFiles         []string           `json:"unformatted_files,omitempty"`
+	Diagnostics              []model.Diagnostic `json:"diagnostics,omitempty"`
 }
 
 func (s *service) lint(_ context.Context, _ *mcp.CallToolRequest, _ emptyInput) (*mcp.CallToolResult, lintOutput, error) {
@@ -232,6 +319,12 @@ func (s *service) lint(_ context.Context, _ *mcp.CallToolRequest, _ emptyInput) 
 		return nil, out, err
 	}
 	out.Files = len(files)
+	out.ProjectConfig = def.ConfigPath
+	configData, err := os.ReadFile(def.ConfigPath)
+	if err != nil {
+		return nil, out, err
+	}
+	out.ProjectConfigUnformatted = !bytes.Equal(configData, hclwrite.Format(configData))
 	for _, path := range files {
 		data, err := os.ReadFile(path)
 		if err != nil {
@@ -250,6 +343,7 @@ func (s *service) lint(_ context.Context, _ *mcp.CallToolRequest, _ emptyInput) 
 type runInput struct {
 	Test      string            `json:"test,omitempty" jsonschema:"one exact test name; omit to run all tests"`
 	Tag       string            `json:"tag,omitempty" jsonschema:"select tests by tag; mutually exclusive with test"`
+	Target    string            `json:"target,omitempty" jsonschema:"named project target; omit to use project.default_target or the implicit local target"`
 	Variables map[string]string `json:"variables,omitempty" jsonschema:"runtime variable values; prefer MCP process environment for secrets"`
 }
 
@@ -275,6 +369,9 @@ func (s *service) run(ctx context.Context, _ *mcp.CallToolRequest, in runInput) 
 	if in.Tag != "" {
 		args = append(args, "--tag", in.Tag)
 	}
+	if in.Target != "" {
+		args = append(args, "--target", in.Target)
+	}
 	for _, name := range sortedKeys(in.Variables) {
 		args = append(args, "--var", name+"="+in.Variables[name])
 	}
@@ -297,6 +394,14 @@ func (s *service) run(ctx context.Context, _ *mcp.CallToolRequest, in runInput) 
 
 func (s *service) load() (*model.ProjectDefinition, []model.Diagnostic) {
 	return hclloader.Loader{}.LoadProject(config.Options{ConfigPath: s.options.ConfigPath, WorkingDir: s.options.WorkingDir})
+}
+
+func (s *service) projectConfigPath() (string, error) {
+	paths, diags := config.Resolve(config.Options{ConfigPath: s.options.ConfigPath, WorkingDir: s.options.WorkingDir})
+	if hasErrors(diags) {
+		return "", fmt.Errorf("cannot resolve project configuration: %s", diags[0].Message)
+	}
+	return paths.ConfigPath, nil
 }
 
 func (s *service) safePath(input string) (string, string, error) {

@@ -166,14 +166,36 @@ type TestDefinition struct {
 }
 
 type ProjectDefinition struct {
-	ConfigPath string
-	BaseDir    string
-	Output     string
-	HTTPClient HTTPClientConfig
-	HTTPProxy  hcl.Expression
-	Datasource *DatasourceDefinition
-	Variables  map[string]VariableDefinition
-	Tests      map[string]TestDefinition
+	ConfigPath    string
+	BaseDir       string
+	Output        string
+	HTTPClient    HTTPClientConfig
+	HTTPProxy     hcl.Expression
+	Datasource    *DatasourceDefinition
+	Variables     map[string]VariableDefinition
+	Tests         map[string]TestDefinition
+	DefaultTarget string
+	Targets       map[string]TargetDefinition
+}
+
+type TargetDefinition struct {
+	Name       string
+	Runtime    string
+	Variables  map[string]hcl.Expression
+	Compose    DockerComposeTarget
+	Kubernetes KubernetesTarget
+	Range      SourceRange
+}
+
+type DockerComposeTarget struct {
+	Project  string
+	Services []string
+}
+
+type KubernetesTarget struct {
+	Context        string
+	Namespace      string
+	ServiceAccount string
 }
 
 type SensitiveValue struct {

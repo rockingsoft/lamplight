@@ -130,6 +130,8 @@ completion, stability, an exceeded bound, or the observation deadline. See
 | `internal/datasource/otlp` | Embedded OTLP/HTTP receiver and in-memory trace store. |
 | `internal/datasource/fake.go` | Scriptable datasource used by tests. |
 | `internal/poller` | Deterministic trace-observation state machine and quantity-rule evaluation. |
+| `internal/executorproto` | Versioned stdio RPC for remote trigger and datasource operations. |
+| `internal/targetruntime` | Docker Compose and Kubernetes executor lifecycle adapters. |
 | `internal/result` | Run aggregation, JSON v1 encoding, and recursive secret redaction. |
 | `internal/artifact` | Atomic, permission-restricted snapshots and retention policy. |
 | `internal/render` | Pretty, deterministic text, and JSON presentation. |
@@ -149,6 +151,7 @@ should integrate through the CLI, Lamplight DSL, JSON output, and schemas.
 | `StaticLoader` | Load a project definition and HCL diagnostics. |
 | `RuntimeResolver` | Resolve runtime values for a selected definition. |
 | `HTTPExecutor` | Perform one evaluated HTTP request. |
+| `TriggerExecutor` | Perform one evaluated backend trigger. |
 | `ExpressionEvaluator` | Evaluate one HCL expression in an explicit context. |
 | `DataStore` | Check connectivity and observe a trace by ID. |
 | `TraceContextFactory` | Generate an independent trace context. |
@@ -158,6 +161,11 @@ should integrate through the CLI, Lamplight DSL, JSON output, and schemas.
 
 Keep business state in `model` values and pass effects through these
 boundaries. Avoid importing CLI concerns into lower-level packages.
+
+For non-local targets, the engine remains in the CLI and replaces its
+`HTTPExecutor`, `TriggerExecutor`, and `DataStore` implementations with one
+stdio protocol client. The ephemeral target process owns only network effects;
+it never receives project files or evaluates tests and checks.
 
 ## Dependency direction
 

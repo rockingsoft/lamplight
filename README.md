@@ -31,6 +31,11 @@ Lamplight has no server, database, dashboard, account system, or cloud
 dependency. The process starts, runs the selected tests, writes its result, and
 exits.
 
+Tests can also run inside a target network without exposing its tracing or
+application ports. Named targets support an automatically managed ephemeral
+container in an existing Docker Compose project or an ephemeral Kubernetes Pod;
+both execute the same Lamplight binary and require no Lamplight server.
+
 ## Status
 
 The current MVP implements an HTTP trigger and all tracing backend families
@@ -90,15 +95,15 @@ create a complete local snapshot without publishing it:
 
 ```sh
 goreleaser check
-goreleaser release --snapshot --clean
-```
-
-Generated binaries, archives, and checksums are written to `dist/`. To build
-only the current platform during development, run:
-
-```sh
 make build
 ```
+
+Generated binaries, archives, checksums, and a multi-architecture OCI executor
+image are written to `dist/`. Because Docker cannot load a multi-platform OCI
+image into its classic local image store, `make build` also loads the platform
+matching the active Docker Engine under the exact snapshot tag used by the CLI.
+This makes the resulting binary immediately usable with `docker_compose`
+targets.
 
 Remove all generated GoReleaser artifacts with:
 
@@ -106,8 +111,9 @@ Remove all generated GoReleaser artifacts with:
 make clean
 ```
 
-`make build` requires GoReleaser to be installed locally and runs
-`goreleaser build --snapshot --clean --single-target`.
+`make build` requires GoReleaser, Docker, and Docker Buildx. Release builds
+publish the same `linux/amd64` and `linux/arm64` executor image as a registry
+manifest under the CLI version.
 
 CI performs a snapshot build on pull requests and pushes to `main`. Pushing a
 semantic-version tag publishes the corresponding GitHub release:
@@ -177,9 +183,10 @@ Start the MCP server for coding agents over stdio:
 ./lamplight mcp --working-dir /absolute/path/to/project
 ```
 
-The MCP server lets agents list and read test definitions, create or edit
-`.wick` files with validation and optimistic concurrency checks, format and
-lint the project, and execute selected tests. See the
+The MCP server lets agents list and read test definitions and targets, create
+or edit `.wick` files and the active `.lamplight` configuration with validation
+and optimistic concurrency checks, format and lint the project, and execute
+selected tests against an optional named target. See the
 [MCP server guide](docs/mcp.md) for client configuration and safety details.
 
 ### Agent skills

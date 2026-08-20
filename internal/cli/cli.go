@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"path/filepath"
 	"sort"
 	"strings"
 
@@ -18,7 +19,9 @@ import (
 	"lamplight/internal/config"
 	"lamplight/internal/datasource"
 	"lamplight/internal/debuglog"
+	"lamplight/internal/diagnostic"
 	"lamplight/internal/engine"
+	"lamplight/internal/executorproto"
 	"lamplight/internal/expr"
 	"lamplight/internal/formatcmd"
 	"lamplight/internal/hclloader"
@@ -30,6 +33,7 @@ import (
 	"lamplight/internal/result"
 	"lamplight/internal/runtimevars"
 	"lamplight/internal/selection"
+	"lamplight/internal/targetruntime"
 	"lamplight/internal/tracecontext"
 	"lamplight/internal/tracetestmigrate"
 	triggerexecutor "lamplight/internal/trigger"
@@ -38,6 +42,45 @@ import (
 type IO struct {
 	In       io.Reader
 	Out, Err io.Writer
+}
+
+func selectTarget(def *model.ProjectDefinition, requested string) (model.TargetDefinition, bool) {
+	name := requested
+	if name == "" {
+		name = def.DefaultTarget
+	}
+	if name == "" || name == "local" {
+		return model.TargetDefinition{Name: "local", Runtime: "local", Variables: map[string]hcl.Expression{}}, true
+	}
+	target, ok := def.Targets[name]
+	return target, ok
+}
+
+func evaluateTargetVariables(target model.TargetDefinition, definitions map[string]model.VariableDefinition) (map[string]cty.Value, []model.Diagnostic) {
+	values := make(map[string]cty.Value, len(target.Variables))
+	var diags []model.Diagnostic
+	for name, expression := range target.Variables {
+		if _, exists := definitions[name]; !exists {
+			diags = append(diags, model.Diagnostic{Severity: diagnostic.SeverityError, Code: diagnostic.CodeVariable, Message: fmt.Sprintf("target %q sets undefined variable %q", target.Name, name)})
+			continue
+		}
+		value, hclDiags := expr.Evaluate(expression, &hcl.EvalContext{Functions: expr.Functions()})
+		if hclDiags.HasErrors() {
+			diags = append(diags, diagnostic.FromHCL(hclDiags, diagnostic.CodeVariable)...)
+			continue
+		}
+		values[name] = value
+	}
+	return values, diags
+}
+
+func firstNonEmptyString(values ...string) string {
+	for _, value := range values {
+		if value != "" {
+			return value
+		}
+	}
+	return "local"
 }
 
 func Main(ctx context.Context, args []string, streams IO) int {
@@ -95,6 +138,16 @@ func Main(ctx context.Context, args []string, streams IO) int {
 		return listTests(ctx, args[2:], streams)
 	case "run":
 		return run(ctx, args[1:], streams)
+	case "executor":
+		if len(args) != 1 {
+			writeLine(streams.Err, "error: executor accepts no arguments")
+			return 1
+		}
+		if err := executorproto.Serve(ctx, streams.In, streams.Out); err != nil {
+			writeLine(streams.Err, "error: executor:", err)
+			return 1
+		}
+		return 0
 	case "mcp":
 		return runMCP(ctx, args[1:], streams)
 	case "migrate":
@@ -337,6 +390,7 @@ func run(ctx context.Context, args []string, streams IO) int {
 	keep := fs.Bool("keep-artifacts", false, "keep successful artifacts")
 	failFast := fs.Bool("fail-fast", false, "stop after the first failed or errored test")
 	artifactsDir := fs.String("artifacts-dir", "", "artifact parent directory")
+	targetName := fs.String("target", "", "execution target")
 	fs.Var(&vars, "var", "NAME=VALUE")
 	if fs.Parse(normalizeRunArgs(args)) != nil {
 		return 1
@@ -354,6 +408,11 @@ func run(ctx context.Context, args []string, streams IO) int {
 	if !ok {
 		return 1
 	}
+	target, targetOK := selectTarget(def, *targetName)
+	if !targetOK {
+		writeLine(streams.Err, "error: target:", fmt.Sprintf("target %q is not declared", firstNonEmptyString(*targetName, def.DefaultTarget)))
+		return 1
+	}
 	tests, err := selection.Select(def, selection.Selector{Name: name, Tag: *tag})
 	if err != nil {
 		writeLine(streams.Err, "error:", err)
@@ -361,7 +420,11 @@ func run(ctx context.Context, args []string, streams IO) int {
 	}
 	debuglog.Debug(ctx, "selected tests", "count", len(tests), "name", name, "tag", *tag)
 	expressions := collectExpressions(def, tests)
-	values, diags := runtimevars.Resolve(def.Variables, runtimevars.Input{Vars: vars}, expressions...)
+	targetValues, targetDiags := evaluateTargetVariables(target, def.Variables)
+	if printDiagnostics(streams.Err, targetDiags) {
+		return 1
+	}
+	values, diags := runtimevars.Resolve(def.Variables, runtimevars.Input{Vars: vars, Target: targetValues}, expressions...)
 	if printDiagnostics(streams.Err, diags) {
 		return 1
 	}
@@ -375,13 +438,14 @@ func run(ctx context.Context, args []string, streams IO) int {
 		}
 		runtimeProject.HTTPClient.Proxy = value
 	}
+	var datasourceConfig *datasource.Config
 	if def.Datasource != nil {
-		store, err := datasourceStore(def.Datasource, values)
+		resolved, err := resolveDatasourceConfig(def.Datasource, values)
 		if err != nil {
 			writeLine(streams.Err, "error: datasource:", err)
 			return 1
 		}
-		runtimeProject.Datasource = store
+		datasourceConfig = &resolved
 	}
 	redactor := result.NewRedactor(sensitiveStrings(values)...)
 	format := render.Format(def.Output)
@@ -410,9 +474,39 @@ func run(ctx context.Context, args []string, streams IO) int {
 			progressFunc = newRunProgress(streams.Err, redactor).Report
 		}
 	}
-	httpExecutor := httpstep.New(nil)
-	eng := engine.Engine{HTTP: httpExecutor, Triggers: triggerexecutor.New(httpExecutor), TraceFactory: tracecontext.NewFactory(), FailFast: *failFast, Progress: progressFunc}
+	var httpExecutor model.HTTPExecutor = httpstep.New(nil)
+	var triggers model.TriggerExecutor = triggerexecutor.New(httpExecutor)
+	var closeRemote func() error
+	if target.Runtime == "local" {
+		if datasourceConfig != nil {
+			store, err := datasource.New(*datasourceConfig)
+			if err != nil {
+				writeLine(streams.Err, "error: datasource:", err)
+				return 1
+			}
+			runtimeProject.Datasource = store
+		}
+	} else {
+		client, closeExecutor, err := startRemoteExecutor(ctx, target, filepath.Dir(def.ConfigPath), datasourceConfig, streams.Err)
+		if err != nil {
+			writeLine(streams.Err, "error:", err)
+			return 1
+		}
+		closeRemote = closeExecutor
+		httpExecutor = client
+		triggers = executorproto.TriggerClient{Client: client}
+		if datasourceConfig != nil {
+			runtimeProject.Datasource = client
+		}
+	}
+	eng := engine.Engine{HTTP: httpExecutor, Triggers: triggers, TraceFactory: tracecontext.NewFactory(), FailFast: *failFast, Progress: progressFunc}
 	runResult := eng.Run(ctx, runtimeProject)
+	if closeRemote != nil {
+		if err := closeRemote(); err != nil {
+			writeLine(streams.Err, "error: executor:", err)
+			return targetruntime.ExitCode(err)
+		}
+	}
 	debuglog.Debug(ctx, "test run completed", "run_id", runResult.RunID, "status", runResult.Status, "tests", len(runResult.Tests))
 	store, err := artifact.NewStore(*artifactsDir, redactor)
 	if err != nil {
@@ -437,7 +531,7 @@ func run(ctx context.Context, args []string, streams IO) int {
 func normalizeRunArgs(args []string) []string {
 	flags := make([]string, 0, len(args))
 	positionals := make([]string, 0, 1)
-	valueFlags := map[string]bool{"--tag": true, "--output": true, "--artifacts-dir": true, "--var": true, "--config": true, "-c": true, "--working-dir": true, "-w": true}
+	valueFlags := map[string]bool{"--tag": true, "--output": true, "--artifacts-dir": true, "--var": true, "--target": true, "--config": true, "-c": true, "--working-dir": true, "-w": true}
 	for index := 0; index < len(args); index++ {
 		argument := args[index]
 		if strings.HasPrefix(argument, "-") {
@@ -457,26 +551,54 @@ func normalizeRunArgs(args []string) []string {
 	return append(flags, positionals...)
 }
 
-func datasourceStore(def *model.DatasourceDefinition, values map[string]model.SensitiveValue) (model.DataStore, error) {
+func resolveDatasourceConfig(def *model.DatasourceDefinition, values map[string]model.SensitiveValue) (datasource.Config, error) {
 	endpoint, err := evalString(def.Endpoint, values)
 	if err != nil {
-		return nil, err
+		return datasource.Config{}, err
 	}
 	headers := map[string]string{}
 	for name, e := range def.Headers {
 		headers[name], err = evalString(e, values)
 		if err != nil {
-			return nil, fmt.Errorf("header %s: %w", name, err)
+			return datasource.Config{}, fmt.Errorf("header %s: %w", name, err)
 		}
 	}
 	token := ""
 	if def.BearerToken != nil {
 		token, err = evalString(def.BearerToken, values)
 		if err != nil {
-			return nil, err
+			return datasource.Config{}, err
 		}
 	}
-	return datasource.New(datasource.Config{Kind: def.Kind, Endpoint: endpoint, Headers: headers, BearerToken: token, TLSSkipVerify: def.TLSSkipVerify})
+	return datasource.Config{Kind: def.Kind, Endpoint: endpoint, Headers: headers, BearerToken: token, TLSSkipVerify: def.TLSSkipVerify}, nil
+}
+
+func datasourceStore(def *model.DatasourceDefinition, values map[string]model.SensitiveValue) (model.DataStore, error) {
+	config, err := resolveDatasourceConfig(def, values)
+	if err != nil {
+		return nil, err
+	}
+	return datasource.New(config)
+}
+
+func startRemoteExecutor(ctx context.Context, target model.TargetDefinition, configDir string, datasourceConfig *datasource.Config, stderr io.Writer) (*executorproto.Client, func() error, error) {
+	requestReader, requestWriter := io.Pipe()
+	responseReader, responseWriter := io.Pipe()
+	done := make(chan error, 1)
+	go func() {
+		err := (targetruntime.Launcher{}).Run(ctx, target, configDir, requestReader, targetruntime.IO{Out: responseWriter, Err: stderr})
+		_ = responseWriter.CloseWithError(err)
+		_ = requestReader.CloseWithError(err)
+		done <- err
+	}()
+	client := executorproto.NewClient(requestWriter, responseReader, datasourceConfig)
+	closeExecutor := func() error {
+		_ = requestWriter.Close()
+		err := <-done
+		_ = responseReader.Close()
+		return err
+	}
+	return client, closeExecutor, nil
 }
 
 func evalString(expression hcl.Expression, values map[string]model.SensitiveValue) (string, error) {
@@ -680,6 +802,7 @@ Options:
   -w, --working-dir DIR   Working directory
       --tag TAG           Run tests containing TAG
       --var NAME=VALUE    Override a variable (repeatable)
+      --target NAME       Use a named execution target (default: project default or local)
       --output FORMAT     Output format: pretty, text, or json
       --fail-fast         Stop after the first failed or errored test
       --keep-artifacts    Keep artifacts for successful runs

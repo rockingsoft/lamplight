@@ -32,13 +32,14 @@ make lint
 go test -race ./...
 ```
 
-Build a snapshot binary for the current host target and remove generated
-artifacts with:
+Build snapshot binaries plus the multi-architecture executor image, and remove
+generated artifacts with:
 
 ```sh
 make build
 make clean
 ```
 
-`make build` requires GoReleaser on the host. Do not commit `dist/`, coverage
-output, or other generated artifacts.
+`make build` requires GoReleaser, Docker, and Docker Buildx. It also loads the
+executor variant matching the active Docker Engine under the snapshot tag used by
+the CLI. Do not commit `dist/`, coverage output, or other generated artifacts.

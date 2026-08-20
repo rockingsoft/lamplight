@@ -37,11 +37,35 @@ func (loader Loader) LoadProject(options config.Options) (*model.ProjectDefiniti
 	if root == nil {
 		return nil, diags
 	}
-	definition := &model.ProjectDefinition{ConfigPath: root.ConfigPath, BaseDir: root.BaseDir, Output: root.Output, HTTPClient: root.HTTPClient, HTTPProxy: root.ProxyExpr, Variables: map[string]model.VariableDefinition{}, Tests: map[string]model.TestDefinition{}}
+	definition := &model.ProjectDefinition{ConfigPath: root.ConfigPath, BaseDir: root.BaseDir, Output: root.Output, HTTPClient: root.HTTPClient, HTTPProxy: root.ProxyExpr, Variables: map[string]model.VariableDefinition{}, Tests: map[string]model.TestDefinition{}, DefaultTarget: root.DefaultTarget, Targets: map[string]model.TargetDefinition{}}
 	if root.DatasourceRaw != nil {
 		datasource, ds := parseDatasource(root.DatasourceRaw)
 		diags = append(diags, ds...)
 		definition.Datasource = datasource
+	}
+	for _, block := range root.DefinitionRaw {
+		switch block.Type {
+		case "variable":
+			variable, ds := parseVariable(block)
+			diags = append(diags, ds...)
+			if variable.Name != "" {
+				if prior, exists := definition.Variables[variable.Name]; exists {
+					diags = append(diags, diagnostic.Error(diagnostic.CodeDuplicate, diagnostic.ReferenceMessage("variable", variable.Name, prior.Range), block.DefRange, "rename one variable"))
+				} else {
+					definition.Variables[variable.Name] = variable
+				}
+			}
+		case "target":
+			target, ds := parseTarget(block)
+			diags = append(diags, ds...)
+			if target.Name != "" {
+				if prior, exists := definition.Targets[target.Name]; exists {
+					diags = append(diags, diagnostic.Error(diagnostic.CodeDuplicate, diagnostic.ReferenceMessage("target", target.Name, prior.Range), block.DefRange, "rename one target"))
+				} else {
+					definition.Targets[target.Name] = target
+				}
+			}
+		}
 	}
 	files, err := discovery.Discover(root.BaseDir)
 	if err != nil {
@@ -56,8 +80,118 @@ func (loader Loader) LoadProject(options config.Options) (*model.ProjectDefiniti
 		fileDiags := parseDefinitions(file, definition)
 		diags = append(diags, fileDiags...)
 	}
+	if definition.DefaultTarget != "" {
+		if _, exists := definition.Targets[definition.DefaultTarget]; !exists && definition.DefaultTarget != "local" {
+			diags = append(diags, diagnostic.Error(diagnostic.CodeReference, fmt.Sprintf("default target %q is not declared", definition.DefaultTarget), root.ProjectRange, "declare the target or use local"))
+		}
+	}
+	for _, target := range definition.Targets {
+		for name, expression := range target.Variables {
+			variable, exists := definition.Variables[name]
+			if !exists {
+				diags = append(diags, diagnostic.Error(diagnostic.CodeReference, fmt.Sprintf("target %q sets undefined variable %q", target.Name, name), expression.Range(), "declare the variable"))
+				continue
+			}
+			if variable.Sensitive {
+				diags = append(diags, diagnostic.Error(diagnostic.CodeSensitivity, fmt.Sprintf("target %q cannot set sensitive variable %q", target.Name, name), expression.Range(), "supply it with LAMPLIGHT_VAR_"+name))
+				continue
+			}
+			value, valueDiags := expr.Evaluate(expression, &hcl.EvalContext{Functions: expr.Functions()})
+			if valueDiags.HasErrors() {
+				diags = append(diags, diagnostic.FromHCL(valueDiags, diagnostic.CodeExpression)...)
+				continue
+			}
+			if !targetValueMatches(variable.Type, value) {
+				diags = append(diags, diagnostic.Error(diagnostic.CodeSchema, fmt.Sprintf("target %q value for variable %q does not match type %s", target.Name, name, variable.Type), expression.Range(), "provide a value matching the variable type"))
+			}
+		}
+	}
 	diags = append(diags, validateReferences(definition)...)
 	return definition, diags
+}
+
+func targetValueMatches(typeName string, value cty.Value) bool {
+	if !value.IsKnown() || value.IsNull() {
+		return false
+	}
+	if typeName == "" || typeName == "string" {
+		return value.Type() == cty.String
+	}
+	if typeName == "int" || typeName == "duration" {
+		if value.Type() != cty.Number {
+			return false
+		}
+		_, accuracy := value.AsBigFloat().Int64()
+		return accuracy == 0
+	}
+	return false
+}
+
+func parseTarget(block *hcl.Block) (model.TargetDefinition, []model.Diagnostic) {
+	target := model.TargetDefinition{Variables: map[string]hcl.Expression{}, Range: model.Range(block.DefRange)}
+	if len(block.Labels) != 1 || block.Labels[0] == "" {
+		return target, []model.Diagnostic{diagnostic.Error(diagnostic.CodeSchema, "target requires one name label", block.DefRange, "add a target name")}
+	}
+	target.Name = block.Labels[0]
+	content, hclDiags := block.Body.Content(&hcl.BodySchema{
+		Attributes: []hcl.AttributeSchema{{Name: "runtime", Required: true}, {Name: "variables"}},
+		Blocks:     []hcl.BlockHeaderSchema{{Type: "docker_compose"}, {Type: "kubernetes"}},
+	})
+	diags := diagnostic.FromHCL(hclDiags, diagnostic.CodeSchema)
+	if attr, ok := content.Attributes["runtime"]; ok {
+		value, ds := attr.Expr.Value(nil)
+		if ds.HasErrors() || !value.IsKnown() || value.IsNull() || value.Type() != cty.String {
+			diags = append(diags, diagnostic.Error(diagnostic.CodeSchema, "target.runtime must be a string literal", attr.Expr.Range(), "use local, docker_compose, or kubernetes"))
+		} else {
+			target.Runtime = value.AsString()
+		}
+	}
+	if target.Runtime != "local" && target.Runtime != "docker_compose" && target.Runtime != "kubernetes" {
+		diags = append(diags, diagnostic.Error(diagnostic.CodeSchema, fmt.Sprintf("unsupported target runtime %q", target.Runtime), block.DefRange, "use local, docker_compose, or kubernetes"))
+	}
+	if attr, ok := content.Attributes["variables"]; ok {
+		values, ds := expressionMap(attr.Expr)
+		target.Variables = values
+		diags = append(diags, ds...)
+	}
+	compose := blocksOfType(content.Blocks, "docker_compose")
+	kubernetes := blocksOfType(content.Blocks, "kubernetes")
+	if len(compose) > 1 || len(kubernetes) > 1 {
+		diags = append(diags, diagnostic.Error(diagnostic.CodeSchema, "target runtime configuration blocks may appear at most once", block.DefRange, "keep one runtime configuration block"))
+	}
+	if len(compose) > 0 {
+		body, bodyDiags := compose[0].Body.Content(&hcl.BodySchema{Attributes: []hcl.AttributeSchema{{Name: "project"}, {Name: "services"}}})
+		diags = append(diags, diagnostic.FromHCL(bodyDiags, diagnostic.CodeSchema)...)
+		if attr, ok := body.Attributes["project"]; ok {
+			target.Compose.Project, diags = appendLiteralString(target.Compose.Project, diags, attr.Expr)
+		}
+		if attr, ok := body.Attributes["services"]; ok {
+			services, valueDiags := tagsExpression(attr.Expr)
+			target.Compose.Services = services
+			diags = append(diags, valueDiags...)
+		}
+	}
+	if len(kubernetes) > 0 {
+		body, ds := kubernetes[0].Body.Content(&hcl.BodySchema{Attributes: []hcl.AttributeSchema{{Name: "context"}, {Name: "namespace"}, {Name: "service_account"}}})
+		diags = append(diags, diagnostic.FromHCL(ds, diagnostic.CodeSchema)...)
+		for name, dest := range map[string]*string{"context": &target.Kubernetes.Context, "namespace": &target.Kubernetes.Namespace, "service_account": &target.Kubernetes.ServiceAccount} {
+			if attr, ok := body.Attributes[name]; ok {
+				*dest, diags = appendLiteralString(*dest, diags, attr.Expr)
+			}
+		}
+	}
+	if target.Runtime == "docker_compose" && len(kubernetes) > 0 || target.Runtime == "kubernetes" && len(compose) > 0 {
+		diags = append(diags, diagnostic.Error(diagnostic.CodeSchema, "target runtime block does not match target.runtime", block.DefRange, "use the matching runtime block"))
+	}
+	return target, diags
+}
+
+func appendLiteralString(current string, diags []model.Diagnostic, expression hcl.Expression) (string, []model.Diagnostic) {
+	value, ds := expression.Value(nil)
+	if ds.HasErrors() || !value.IsKnown() || value.IsNull() || value.Type() != cty.String {
+		return current, append(diags, diagnostic.Error(diagnostic.CodeSchema, "value must be a string literal", expression.Range(), "use a quoted string"))
+	}
+	return value.AsString(), diags
 }
 
 func parseDatasource(block *hcl.Block) (*model.DatasourceDefinition, []model.Diagnostic) {

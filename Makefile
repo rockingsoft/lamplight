@@ -28,7 +28,7 @@ test-race:
 test-all: deps fmt-check vet lint test-race
 
 build:
-	goreleaser build --snapshot --clean --single-target
+	./scripts/build-snapshot.sh
 
 clean:
 	rm -rf -- dist

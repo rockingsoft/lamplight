@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
@@ -16,7 +17,8 @@ func TestServerListsReadsWritesAndRollsBack(t *testing.T) {
 	if err := os.Mkdir(base, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(root, ".lamplight"), []byte("project {\n  base_dir = \"./tests\"\n  output = \"json\"\n}\n"), 0o644); err != nil {
+	configContent := []byte("project {\n  base_dir = \"./tests\"\n  output = \"json\"\n  default_target = \"compose\"\n}\nvariable \"BASE_URL\" { type = string }\ntarget \"compose\" {\n  runtime = \"docker_compose\"\n  variables = { BASE_URL = \"http://api:8080\" }\n  docker_compose { services = [\"api\"] }\n}\n")
+	if err := os.WriteFile(filepath.Join(root, ".lamplight"), configContent, 0o644); err != nil {
 		t.Fatal(err)
 	}
 	original := []byte("test \"health\" {\n  step \"get\" {\n    http_request {\n      method = \"GET\"\n      url    = \"http://example.test\"\n    }\n  }\n}\n")
@@ -47,15 +49,52 @@ func TestServerListsReadsWritesAndRollsBack(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(tools.Tools) != 7 {
-		t.Fatalf("got %d tools, want 7", len(tools.Tools))
+	if len(tools.Tools) != 10 {
+		t.Fatalf("got %d tools, want 10", len(tools.Tools))
 	}
-	runResult := call(t, ctx, clientSession, "lamplight_run_tests", map[string]any{"test": "health", "variables": map[string]any{"BASE_URL": "http://example.test"}})
+	listResult := call(t, ctx, clientSession, "lamplight_list_tests", nil)
+	var listed listOutput
+	decodeStructured(t, listResult, &listed)
+	if listed.DefaultTarget != "compose" || len(listed.Targets) != 1 || listed.Targets[0] != (targetSummary{Name: "compose", Runtime: "docker_compose"}) {
+		t.Fatalf("unexpected target metadata: %#v", listed)
+	}
+	runResult := call(t, ctx, clientSession, "lamplight_run_tests", map[string]any{"test": "health", "target": "compose", "variables": map[string]any{"BASE_URL": "http://example.test"}})
 	if runResult.IsError {
 		t.Fatal("run tool unexpectedly failed")
 	}
 	if len(runArgs) < 2 || runArgs[0] != "run" || runArgs[len(runArgs)-1] != "health" {
 		t.Fatalf("unexpected CLI run arguments: %q", runArgs)
+	}
+	if !containsPair(runArgs, "--target", "compose") {
+		t.Fatalf("run did not forward target: %q", runArgs)
+	}
+
+	configReadResult := call(t, ctx, clientSession, "lamplight_read_project_config", nil)
+	var configRead fileOutput
+	decodeStructured(t, configReadResult, &configRead)
+	if configRead.SHA256 == "" || configRead.Content != string(configContent) {
+		t.Fatalf("unexpected config read: %#v", configRead)
+	}
+	updatedConfig := strings.Replace(configRead.Content, "default_target = \"compose\"", "default_target = \"local-dev\"", 1) + "\ntarget \"local-dev\" { runtime = \"local\" }\n"
+	configWriteResult := call(t, ctx, clientSession, "lamplight_write_project_config", map[string]any{"content": updatedConfig, "expected_sha256": configRead.SHA256})
+	if configWriteResult.IsError {
+		t.Fatalf("valid config write failed: %#v", configWriteResult.Content)
+	}
+	var configWritten mutationOutput
+	decodeStructured(t, configWriteResult, &configWritten)
+	if !configWritten.Changed {
+		t.Fatal("valid config write reported no change")
+	}
+	invalidConfigResult := call(t, ctx, clientSession, "lamplight_write_project_config", map[string]any{"content": "project {}", "expected_sha256": configWritten.SHA256})
+	if !invalidConfigResult.IsError {
+		t.Fatal("invalid config write unexpectedly succeeded")
+	}
+	configAfter, err := os.ReadFile(filepath.Join(root, ".lamplight"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if digest(configAfter) != configWritten.SHA256 {
+		t.Fatal("invalid config write was not rolled back")
 	}
 
 	readResult := call(t, ctx, clientSession, "lamplight_read_test_file", map[string]any{"path": "health.wick"})
@@ -92,6 +131,15 @@ func TestServerListsReadsWritesAndRollsBack(t *testing.T) {
 	if string(after) != string(accepted) {
 		t.Fatal("invalid write was not rolled back")
 	}
+}
+
+func containsPair(values []string, first, second string) bool {
+	for index := 0; index+1 < len(values); index++ {
+		if values[index] == first && values[index+1] == second {
+			return true
+		}
+	}
+	return false
 }
 
 func TestServerRejectsEscapingPaths(t *testing.T) {
