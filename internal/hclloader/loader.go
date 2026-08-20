@@ -249,14 +249,24 @@ func parseStep(block *hcl.Block) (model.StepDefinition, []model.Diagnostic) {
 	if !hclsyntax.ValidIdentifier(step.Name) {
 		diags = append(diags, diagnostic.Error(diagnostic.CodeSchema, fmt.Sprintf("step name %q must be a valid HCL identifier", step.Name), block.DefRange, "use a valid HCL identifier"))
 	}
-	content, hclDiags := block.Body.Content(&hcl.BodySchema{Attributes: []hcl.AttributeSchema{{Name: "outputs"}}, Blocks: []hcl.BlockHeaderSchema{{Type: "http_request"}, {Type: "check", LabelNames: []string{"name"}}}})
+	content, hclDiags := block.Body.Content(&hcl.BodySchema{Attributes: []hcl.AttributeSchema{{Name: "outputs"}}, Blocks: []hcl.BlockHeaderSchema{{Type: "http_request"}, {Type: "grpc_request"}, {Type: "graphql_request"}, {Type: "kafka_request"}, {Type: "traceid"}, {Type: "cypress"}, {Type: "playwright"}, {Type: "artillery"}, {Type: "k6"}, {Type: "playwright_engine"}, {Type: "check", LabelNames: []string{"name"}}}})
 	diags = append(diags, diagnostic.FromHCL(hclDiags, diagnostic.CodeSchema)...)
-	requests := blocksOfType(content.Blocks, "http_request")
-	if len(requests) != 1 {
-		diags = append(diags, diagnostic.Error(diagnostic.CodeSchema, fmt.Sprintf("step %q requires exactly one http_request block", step.Name), block.DefRange, "add one http_request block"))
-	} else {
-		request, ds := parseHTTP(requests[0])
+	var triggers []*hcl.Block
+	for _, child := range content.Blocks {
+		if child.Type != "check" {
+			triggers = append(triggers, child)
+		}
+	}
+	if len(triggers) != 1 {
+		diags = append(diags, diagnostic.Error(diagnostic.CodeSchema, fmt.Sprintf("step %q requires exactly one trigger block", step.Name), block.DefRange, "add one request or traceid trigger block"))
+	} else if triggers[0].Type == "http_request" {
+		request, ds := parseHTTP(triggers[0])
 		step.HTTP = request
+		step.Trigger.Kind = model.TriggerHTTP
+		diags = append(diags, ds...)
+	} else {
+		trigger, ds := parseTrigger(triggers[0])
+		step.Trigger = trigger
 		diags = append(diags, ds...)
 	}
 	if attr, ok := content.Attributes["outputs"]; ok {
@@ -271,6 +281,43 @@ func parseStep(block *hcl.Block) (model.StepDefinition, []model.Diagnostic) {
 		diags = append(diags, ds...)
 	}
 	return step, diags
+}
+
+func parseTrigger(block *hcl.Block) (model.TriggerDefinition, []model.Diagnostic) {
+	kinds := map[string]model.TriggerKind{
+		"grpc_request": model.TriggerGRPC, "graphql_request": model.TriggerGraphQL,
+		"kafka_request": model.TriggerKafka, "traceid": model.TriggerTraceID,
+		"cypress": model.TriggerCypress, "playwright": model.TriggerPlaywright,
+		"artillery": model.TriggerArtillery, "k6": model.TriggerK6,
+		"playwright_engine": model.TriggerPlaywrightEngine,
+	}
+	required := map[string][]string{
+		"grpc_request":    {"protobuf", "address", "method", "request"},
+		"graphql_request": {"url", "query"},
+		"kafka_request":   {"broker_urls", "topic", "message_value"},
+		"traceid":         {"id"}, "cypress": {"id"}, "playwright": {"id"},
+		"artillery": {"id"}, "k6": {"id"},
+		"playwright_engine": {"target", "script"},
+	}
+	optional := map[string][]string{
+		"grpc_request":      {"metadata"},
+		"graphql_request":   {"variables", "operation_name", "headers"},
+		"kafka_request":     {"message_key", "headers", "username", "password", "tls"},
+		"playwright_engine": {"method"},
+	}
+	schema := &hcl.BodySchema{}
+	for _, name := range required[block.Type] {
+		schema.Attributes = append(schema.Attributes, hcl.AttributeSchema{Name: name, Required: true})
+	}
+	for _, name := range optional[block.Type] {
+		schema.Attributes = append(schema.Attributes, hcl.AttributeSchema{Name: name})
+	}
+	content, hclDiags := block.Body.Content(schema)
+	definition := model.TriggerDefinition{Kind: kinds[block.Type], Attributes: map[string]hcl.Expression{}}
+	for name, attribute := range content.Attributes {
+		definition.Attributes[name] = attribute.Expr
+	}
+	return definition, diagnostic.FromHCL(hclDiags, diagnostic.CodeSchema)
 }
 
 func parseHTTP(block *hcl.Block) (model.HTTPRequestDefinition, []model.Diagnostic) {
@@ -505,6 +552,9 @@ func validateReferences(definition *model.ProjectDefinition) []model.Diagnostic 
 		seen := map[string]model.StepDefinition{}
 		for _, step := range test.Steps {
 			for _, expression := range append([]hcl.Expression{step.HTTP.Method, step.HTTP.URL, step.HTTP.Body}, mapExpressions(step.HTTP.Headers)...) {
+				diags = append(diags, validateExpression(expression, definition.Variables, seen, "var", "steps")...)
+			}
+			for _, expression := range mapExpressions(step.Trigger.Attributes) {
 				diags = append(diags, validateExpression(expression, definition.Variables, seen, "var", "steps")...)
 			}
 			for _, expression := range mapExpressions(step.Outputs) {

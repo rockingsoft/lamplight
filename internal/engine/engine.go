@@ -20,6 +20,7 @@ import (
 
 type Engine struct {
 	HTTP         model.HTTPExecutor
+	Triggers     model.TriggerExecutor
 	TraceFactory model.TraceContextFactory
 	Clock        model.Clock
 }
@@ -101,15 +102,42 @@ func (e *Engine) runStep(ctx context.Context, project *model.Project, step model
 		sr.TraceID = string(created.TraceID)
 	}
 	stepsValue := stepsCTY(previous)
-	req, err := evaluateRequest(step.HTTP, project.Variables, stepsValue)
-	if err != nil {
-		sr.Error = diagnostic("request_evaluation", err.Error())
-		return finish(model.StatusError)
+	var response model.Response
+	var err error
+	executionCode := "trigger_execution"
+	if step.Trigger.Kind == "" || step.Trigger.Kind == model.TriggerHTTP {
+		executionCode = "http_execution"
+		req, evalErr := evaluateRequest(step.HTTP, project.Variables, stepsValue)
+		if evalErr != nil {
+			sr.Error = diagnostic("request_evaluation", evalErr.Error())
+			return finish(model.StatusError)
+		}
+		sr.Request = &req
+		response, err = e.HTTP.Execute(ctx, req, project.HTTPClient, trace)
+	} else {
+		if e.Triggers == nil {
+			sr.Error = diagnostic("trigger_execution", "trigger executor is not configured")
+			return finish(model.StatusError)
+		}
+		req, evalErr := evaluateTrigger(step.Trigger, project.Variables, stepsValue)
+		if evalErr != nil {
+			sr.Error = diagnostic("trigger_evaluation", evalErr.Error())
+			return finish(model.StatusError)
+		}
+		if trace != nil && isTraceIDTrigger(req.Kind) {
+			id, _ := req.Attributes["id"].(string)
+			if len(id) != 32 || !validHex(id) {
+				sr.Error = diagnostic("trigger_evaluation", fmt.Sprintf("%s.id must be a 32-character trace ID", req.Kind))
+				return finish(model.StatusError)
+			}
+			trace.TraceID = model.TraceID(id)
+			sr.TraceID = id
+		}
+		sr.Trigger = &req
+		response, err = e.Triggers.Execute(ctx, req, project.HTTPClient, trace)
 	}
-	sr.Request = &req
-	response, err := e.HTTP.Execute(ctx, req, project.HTTPClient, trace)
 	if err != nil {
-		sr.Error = diagnostic("http_execution", err.Error())
+		sr.Error = diagnostic(executionCode, err.Error())
 		return finish(model.StatusError)
 	}
 	sr.Response = &response
@@ -181,6 +209,38 @@ func (e *Engine) runStep(ctx context.Context, project *model.Project, step model
 		}
 	}
 	return finish(sr.Status)
+}
+
+func validHex(value string) bool { _, err := hex.DecodeString(value); return err == nil }
+
+func isTraceIDTrigger(kind model.TriggerKind) bool {
+	switch kind {
+	case model.TriggerTraceID, model.TriggerCypress, model.TriggerPlaywright, model.TriggerArtillery, model.TriggerK6:
+		return true
+	default:
+		return false
+	}
+}
+
+func evaluateTrigger(def model.TriggerDefinition, variables map[string]model.SensitiveValue, steps cty.Value) (model.TriggerRequest, error) {
+	ctx := &hcl.EvalContext{Variables: map[string]cty.Value{"var": expr.Variables(variables), "steps": steps}, Functions: expr.Functions()}
+	request := model.TriggerRequest{Kind: def.Kind, Attributes: map[string]any{}}
+	for _, name := range sortedExpressions(def.Attributes) {
+		value, diags := expr.Evaluate(def.Attributes[name], ctx)
+		if diags.HasErrors() || !value.IsKnown() || value.IsNull() {
+			return request, fmt.Errorf("%s must evaluate to a known non-null value: %s", name, diags.Error())
+		}
+		encoded, err := ctyjson.Marshal(value, value.Type())
+		if err != nil {
+			return request, fmt.Errorf("encode %s: %w", name, err)
+		}
+		var decoded any
+		if err := json.Unmarshal(encoded, &decoded); err != nil {
+			return request, fmt.Errorf("decode %s: %w", name, err)
+		}
+		request.Attributes[name] = decoded
+	}
+	return request, nil
 }
 
 func evaluateRequest(def model.HTTPRequestDefinition, variables map[string]model.SensitiveValue, steps cty.Value) (model.HTTPRequest, error) {

@@ -29,6 +29,7 @@ import (
 	"lamplight/internal/selection"
 	"lamplight/internal/tracecontext"
 	"lamplight/internal/tracetestmigrate"
+	triggerexecutor "lamplight/internal/trigger"
 )
 
 type IO struct {
@@ -259,7 +260,8 @@ func run(ctx context.Context, args []string, streams IO) int {
 		}
 		runtimeProject.Datasource = store
 	}
-	eng := engine.Engine{HTTP: httpstep.New(nil), TraceFactory: tracecontext.NewFactory()}
+	httpExecutor := httpstep.New(nil)
+	eng := engine.Engine{HTTP: httpExecutor, Triggers: triggerexecutor.New(httpExecutor), TraceFactory: tracecontext.NewFactory()}
 	runResult := eng.Run(ctx, runtimeProject)
 	redactor := result.NewRedactor(sensitiveStrings(values)...)
 	store, err := artifact.NewStore(*artifactsDir, redactor)
@@ -365,6 +367,9 @@ func collectExpressions(def *model.ProjectDefinition, tests []model.TestDefiniti
 		for _, s := range t.Steps {
 			out = append(out, s.HTTP.Method, s.HTTP.URL, s.HTTP.Body)
 			for _, e := range s.HTTP.Headers {
+				out = append(out, e)
+			}
+			for _, e := range s.Trigger.Attributes {
 				out = append(out, e)
 			}
 			for _, e := range s.Outputs {

@@ -98,6 +98,35 @@ type HTTPRequestDefinition struct {
 	Body    hcl.Expression
 }
 
+type TriggerKind string
+
+const (
+	TriggerHTTP             TriggerKind = "http"
+	TriggerGRPC             TriggerKind = "grpc"
+	TriggerGraphQL          TriggerKind = "graphql"
+	TriggerKafka            TriggerKind = "kafka"
+	TriggerTraceID          TriggerKind = "traceid"
+	TriggerCypress          TriggerKind = "cypress"
+	TriggerPlaywright       TriggerKind = "playwright"
+	TriggerArtillery        TriggerKind = "artillery"
+	TriggerK6               TriggerKind = "k6"
+	TriggerPlaywrightEngine TriggerKind = "playwrightengine"
+)
+
+type TriggerDefinition struct {
+	Kind       TriggerKind
+	Attributes map[string]hcl.Expression
+}
+
+type TriggerRequest struct {
+	Kind       TriggerKind    `json:"kind"`
+	Attributes map[string]any `json:"attributes,omitempty"`
+}
+
+type TriggerExecutor interface {
+	Execute(context.Context, TriggerRequest, HTTPClientConfig, *TestTraceContext) (Response, error)
+}
+
 type QuantityRule struct {
 	Kind  string
 	Value int
@@ -120,6 +149,7 @@ type CheckDefinition struct {
 type StepDefinition struct {
 	Name    string
 	HTTP    HTTPRequestDefinition
+	Trigger TriggerDefinition
 	Outputs map[string]hcl.Expression
 	Checks  []CheckDefinition
 	Range   SourceRange
@@ -256,6 +286,7 @@ type StepResult struct {
 	DurationMS  int64               `json:"duration_ms"`
 	TraceID     string              `json:"trace_id,omitempty"`
 	Request     *HTTPRequest        `json:"request,omitempty"`
+	Trigger     *TriggerRequest     `json:"trigger,omitempty"`
 	Response    *Response           `json:"response,omitempty"`
 	Outputs     map[string]any      `json:"outputs,omitempty"`
 	Checks      []CheckResult       `json:"checks"`
