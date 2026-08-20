@@ -53,6 +53,7 @@ upgrading once releases exist.
 Requirements:
 
 - Go 1.23 or newer.
+- `make` for the repository development commands.
 
 ```sh
 git clone <repository-url>
@@ -65,6 +66,21 @@ Run directly without building:
 ```sh
 go run ./cmd/lamplight --help
 ```
+
+### Local checks
+
+Run the standard Go test suite or every local quality check:
+
+```sh
+make test
+make test-all
+```
+
+`make test-all` verifies modules and formatting, runs `go vet`, golangci-lint,
+and the complete test suite with the race detector. The lint target runs its
+pinned golangci-lint version through `go run`, so no separate installation is
+required. Individual targets are available as `deps`, `fmt-check`, `vet`,
+`lint`, `test`, and `test-race`.
 
 ### Multi-platform builds
 
@@ -81,8 +97,17 @@ Generated binaries, archives, and checksums are written to `dist/`. To build
 only the current platform during development, run:
 
 ```sh
-goreleaser build --snapshot --clean --single-target
+make build
 ```
+
+Remove all generated GoReleaser artifacts with:
+
+```sh
+make clean
+```
+
+`make build` requires GoReleaser to be installed locally and runs
+`goreleaser build --snapshot --clean --single-target`.
 
 CI performs a snapshot build on pull requests and pushes to `main`. Pushing a
 semantic-version tag publishes the corresponding GitHub release:

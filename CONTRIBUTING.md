@@ -11,18 +11,30 @@ Requirements:
 
 - Go 1.23 or newer;
 - Git;
+- `make`;
+- GoReleaser for local release builds;
 - optional access to a Tempo-compatible endpoint for manual integration tests.
 
-Clone the repository and run the test suite:
+Clone the repository and run every local quality check:
 
 ```sh
 git clone <repository-url>
 cd lamplight
-go test ./...
-go build ./cmd/lamplight
+make test-all
 ```
 
-No database, container, or external service is required for automated tests.
+`make test-all` verifies dependencies and formatting, runs `go vet`, the pinned
+golangci-lint version through `go run`, and the race-enabled test suite. No
+separate linter installation is required. The Go tests require no database,
+container, or external service.
+
+Build only the binary for the current platform and remove generated artifacts
+with:
+
+```sh
+make build
+make clean
+```
 
 ## Repository guide
 
@@ -45,13 +57,20 @@ CLI, Lamplight DSL, rendered output, JSON result, and versioned schemas.
 Run all of the following before opening a pull request:
 
 ```sh
+make test-all
+```
+
+For focused local iteration before running the complete workflow:
+
+```sh
 gofmt -w $(git ls-files '*.go')
-go test ./...
-go test -race ./...
+go mod verify
 go vet ./...
+make lint
+go test -race ./...
 go test ./... -coverprofile=coverage.out
 go tool cover -func=coverage.out
-go build ./cmd/lamplight
+make build
 git diff --check
 ```
 
