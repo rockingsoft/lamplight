@@ -17,6 +17,7 @@ import (
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 	"github.com/zclconf/go-cty/cty"
 	"lamplight/internal/artifact"
+	"lamplight/internal/buildinfo"
 	"lamplight/internal/config"
 	"lamplight/internal/datasource"
 	"lamplight/internal/debuglog"
@@ -109,6 +110,13 @@ func Main(ctx context.Context, args []string, streams IO) int {
 		return 1
 	}
 	switch args[0] {
+	case "version", "--version":
+		if len(args) != 1 {
+			writeLine(streams.Err, "error: version accepts no arguments")
+			return 1
+		}
+		writeLine(streams.Out, "lamplight", buildinfo.Version)
+		return 0
 	case "init":
 		fs := flag.NewFlagSet("init", flag.ContinueOnError)
 		fs.SetOutput(streams.Err)
@@ -720,6 +728,7 @@ Usage:
   lamplight <command> [options]
 
 Commands:
+  version              Print the Lamplight version
   init                 Create a new Lamplight project
   fmt                  Format Lamplight test files
   validate             Validate the project without running tests

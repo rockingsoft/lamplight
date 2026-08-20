@@ -53,6 +53,25 @@ This is still an early project. The public DSL and JSON schema should be
 treated as versioned interfaces, but users should review release notes before
 upgrading once releases exist.
 
+## Install
+
+Install the latest Lamplight release on macOS or Linux:
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/rockingsoft/lamplight/main/install.sh | sh
+```
+
+The installer detects `amd64`/`arm64`, verifies the release checksum, and uses
+`/usr/local/bin` when writable or `~/.local/bin` otherwise. Override the
+destination or pin a version when needed:
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/rockingsoft/lamplight/main/install.sh | LAMPLIGHT_INSTALL_DIR="$HOME/bin" sh
+curl -fsSL https://raw.githubusercontent.com/rockingsoft/lamplight/main/install.sh | LAMPLIGHT_VERSION=v0.1.0 sh
+```
+
+Confirm the installed version with `lamplight version`.
+
 ## Build
 
 Requirements:
