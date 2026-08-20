@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"bytes"
 	"context"
 	"flag"
 	"fmt"
@@ -10,6 +11,7 @@ import (
 	"strings"
 
 	"github.com/hashicorp/hcl/v2"
+	"github.com/modelcontextprotocol/go-sdk/mcp"
 	"github.com/zclconf/go-cty/cty"
 	"lamplight/internal/artifact"
 	"lamplight/internal/config"
@@ -19,6 +21,7 @@ import (
 	"lamplight/internal/hclloader"
 	"lamplight/internal/httpstep"
 	"lamplight/internal/initcmd"
+	"lamplight/internal/mcpserver"
 	"lamplight/internal/model"
 	"lamplight/internal/render"
 	"lamplight/internal/result"
@@ -71,10 +74,37 @@ func Main(ctx context.Context, args []string, streams IO) int {
 		return listTests(args[2:], streams)
 	case "run":
 		return run(ctx, args[1:], streams)
+	case "mcp":
+		return runMCP(ctx, args[1:], streams)
 	default:
 		usage(streams.Err)
 		return 1
 	}
+}
+
+func runMCP(ctx context.Context, args []string, streams IO) int {
+	fs, common := commonFlags("mcp", streams.Err)
+	if fs.Parse(args) != nil {
+		return 1
+	}
+	if len(fs.Args()) != 0 {
+		fmt.Fprintln(streams.Err, "error: mcp accepts no positional arguments")
+		return 1
+	}
+	server := mcpserver.New(mcpserver.Options{
+		ConfigPath: common.config,
+		WorkingDir: common.working,
+		RunCLI: func(runCtx context.Context, runArgs []string) (int, []byte, []byte) {
+			var stdout, stderr bytes.Buffer
+			exitCode := Main(runCtx, runArgs, IO{Out: &stdout, Err: &stderr})
+			return exitCode, stdout.Bytes(), stderr.Bytes()
+		},
+	})
+	if err := server.Run(ctx, &mcp.StdioTransport{}); err != nil {
+		fmt.Fprintln(streams.Err, "error: mcp:", err)
+		return 1
+	}
+	return 0
 }
 
 type common struct{ config, working string }
@@ -356,4 +386,6 @@ func printDiagnostics(w io.Writer, diags []model.Diagnostic) bool {
 	}
 	return has
 }
-func usage(w io.Writer) { fmt.Fprintln(w, "usage: lamplight <init|validate|list tests|run> [options]") }
+func usage(w io.Writer) {
+	fmt.Fprintln(w, "usage: lamplight <init|validate|list tests|run|mcp> [options]")
+}

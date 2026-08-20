@@ -89,6 +89,17 @@ Run all tests, one test, or a tag:
 ./lamplight run --tag smoke
 ```
 
+Start the MCP server for coding agents over stdio:
+
+```sh
+./lamplight mcp --working-dir /absolute/path/to/project
+```
+
+The MCP server lets agents list and read test definitions, create or edit
+`.wick` files with validation and optimistic concurrency checks, format and
+lint the project, and execute selected tests. See the
+[MCP server guide](docs/mcp.md) for client configuration and safety details.
+
 Supply runtime variables through the environment or CLI:
 
 ```sh
@@ -202,6 +213,7 @@ Exit codes:
   outputs, and errors.
 - [Architecture](docs/architecture.md) — runtime flow, package organization,
   interfaces, state machines, and extension points.
+- [MCP server](docs/mcp.md) — agent tools, configuration, and write safety.
 - [Tempo integration](docs/tempo.md) — configuration, propagation,
   authentication, polling, and troubleshooting.
 - [Contributing](CONTRIBUTING.md) — development workflow, quality gates, and
