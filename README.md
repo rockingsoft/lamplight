@@ -61,9 +61,10 @@ Install the latest Lamplight release on macOS or Linux:
 curl -fsSL https://raw.githubusercontent.com/rockingsoft/lamplight/main/install.sh | sh
 ```
 
-The installer detects `amd64`/`arm64`, verifies the release checksum, and uses
-`/usr/local/bin` when writable or `~/.local/bin` otherwise. Override the
-destination or pin a version when needed:
+The installer detects `amd64`/`arm64`, verifies the release checksum, installs
+to `~/.local/bin`, and adds that directory to the current shell's `PATH` when
+needed. The shell configuration change is idempotent. Open a new terminal after
+the first installation. Override the destination or pin a version when needed:
 
 ```sh
 curl -fsSL https://raw.githubusercontent.com/rockingsoft/lamplight/main/install.sh | LAMPLIGHT_INSTALL_DIR="$HOME/bin" sh

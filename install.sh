@@ -64,8 +64,6 @@ tar -xzf "${tmp_dir}/${archive}" -C "$tmp_dir" lamplight || fail "could not extr
 
 if [ -n "${LAMPLIGHT_INSTALL_DIR:-}" ]; then
   install_dir="$LAMPLIGHT_INSTALL_DIR"
-elif [ -d /usr/local/bin ] && [ -w /usr/local/bin ]; then
-  install_dir="/usr/local/bin"
 else
   install_dir="${HOME}/.local/bin"
 fi
@@ -76,5 +74,36 @@ install -m 0755 "${tmp_dir}/lamplight" "${install_dir}/lamplight" || fail "could
 printf 'Installed Lamplight %s at %s/lamplight\n' "$tag" "$install_dir"
 case ":${PATH}:" in
   *":${install_dir}:"*) ;;
-  *) printf 'Add %s to PATH to run lamplight from any directory.\n' "$install_dir" ;;
+  *)
+    shell_name="${SHELL##*/}"
+    case "$shell_name" in
+      zsh)
+        shell_config="${ZDOTDIR:-$HOME}/.zshrc"
+        path_line="export PATH=\"${install_dir}:\$PATH\""
+        ;;
+      bash)
+        shell_config="${HOME}/.bashrc"
+        path_line="export PATH=\"${install_dir}:\$PATH\""
+        ;;
+      fish)
+        shell_config="${XDG_CONFIG_HOME:-$HOME/.config}/fish/config.fish"
+        path_line="fish_add_path ${install_dir}"
+        ;;
+      *)
+        shell_config="${HOME}/.profile"
+        path_line="export PATH=\"${install_dir}:\$PATH\""
+        ;;
+    esac
+
+    mkdir -p "$(dirname "$shell_config")" || fail "could not create the shell configuration directory"
+    touch "$shell_config" || fail "could not update ${shell_config}"
+    if grep -Fqx "$path_line" "$shell_config"; then
+      printf '%s is already configured in %s\n' "$install_dir" "$shell_config"
+    else
+      printf '\n# Added by the Lamplight installer\n%s\n' "$path_line" >>"$shell_config" ||
+        fail "could not update ${shell_config}"
+      printf 'Added %s to PATH in %s\n' "$install_dir" "$shell_config"
+    fi
+    printf 'Open a new terminal or run: . %s\n' "$shell_config"
+    ;;
 esac
