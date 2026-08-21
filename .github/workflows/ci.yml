@@ -129,14 +129,15 @@ jobs:
           jq -e '
             .schema_version == 1 and
             .status == "passed" and
-            (.tests | length) == 5 and
+            (.tests | length) == 6 and
             all(.tests[]; .status == "passed") and
             ([.tests[].name] | sort) == ([
               "Import a Pokemon reading a Stream",
               "Import a Pokemon using API and MQ Worker",
               "List Pokemons",
               "List Pokemons using gRPC",
-              "Pokeshop - Add"
+              "Pokeshop - Add",
+              "web_zero_code"
             ] | sort)
           ' lamplight-result.json > /dev/null
 

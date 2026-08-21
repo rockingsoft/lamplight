@@ -23,7 +23,8 @@ type IO struct {
 }
 
 type Launcher struct {
-	Command func(context.Context, string, ...string) *exec.Cmd
+	Command   func(context.Context, string, ...string) *exec.Cmd
+	OBISettle time.Duration
 }
 
 func (r Launcher) Run(ctx context.Context, target model.TargetDefinition, configDir string, otlpEndpoint string, instrumentation *model.InstrumentationDefinition, input io.Reader, streams IO) error {
@@ -97,7 +98,7 @@ func (r Launcher) dockerCompose(ctx context.Context, command func(context.Contex
 		if out, err := command(ctx, "docker", obiArgs...).CombinedOutput(); err != nil {
 			return fmt.Errorf("start OBI instrumentation: %w: %s", err, strings.TrimSpace(string(out)))
 		}
-		if err := waitDockerOBI(ctx, command, obiName); err != nil {
+		if err := waitDockerOBI(ctx, command, obiName, r.obiSettle()); err != nil {
 			return err
 		}
 	}
@@ -138,6 +139,9 @@ func (r Launcher) kubernetes(ctx context.Context, command func(context.Context, 
 		if out, err := command(ctx, "kubectl", rolloutArgs...).CombinedOutput(); err != nil {
 			return fmt.Errorf("wait for OBI instrumentation: %w: %s", err, strings.TrimSpace(string(out)))
 		}
+		if err := waitContext(ctx, r.obiSettle()); err != nil {
+			return err
+		}
 	}
 
 	args := append([]string{}, placement...)
@@ -175,7 +179,14 @@ func ports(values []int) string {
 	return strings.Join(parts, ",")
 }
 
-func waitDockerOBI(ctx context.Context, command func(context.Context, string, ...string) *exec.Cmd, name string) error {
+func (r Launcher) obiSettle() time.Duration {
+	if r.OBISettle > 0 {
+		return r.OBISettle
+	}
+	return 2 * time.Second
+}
+
+func waitDockerOBI(ctx context.Context, command func(context.Context, string, ...string) *exec.Cmd, name string, settle time.Duration) error {
 	deadline := time.NewTimer(20 * time.Second)
 	defer deadline.Stop()
 	ticker := time.NewTicker(250 * time.Millisecond)
@@ -183,7 +194,7 @@ func waitDockerOBI(ctx context.Context, command func(context.Context, string, ..
 	for {
 		output, err := command(ctx, "docker", "logs", name).CombinedOutput()
 		if err == nil && strings.Contains(string(output), "Launching p.Tracer") {
-			return nil
+			return waitContext(ctx, settle)
 		}
 		select {
 		case <-ctx.Done():
@@ -192,6 +203,17 @@ func waitDockerOBI(ctx context.Context, command func(context.Context, string, ..
 			return fmt.Errorf("OBI instrumentation did not attach before the 20s startup deadline: %s", strings.TrimSpace(string(output)))
 		case <-ticker.C:
 		}
+	}
+}
+
+func waitContext(ctx context.Context, duration time.Duration) error {
+	timer := time.NewTimer(duration)
+	defer timer.Stop()
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-timer.C:
+		return nil
 	}
 }
 

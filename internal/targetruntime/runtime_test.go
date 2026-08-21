@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"lamplight/internal/model"
 )
@@ -80,7 +81,7 @@ esac
 	t.Setenv("FAKE_LOG", log)
 	t.Setenv("LAMPLIGHT_RUNNER_IMAGE", "lamplight:test")
 	definition := &model.InstrumentationDefinition{Image: "otel/ebpf-instrument:v0.11.0", OpenPorts: []int{8080, 9090}, ContextPropagation: "all"}
-	if err := (Launcher{}).Run(context.Background(), model.TargetDefinition{Runtime: "docker_compose"}, dir, "http://127.0.0.1:4318", definition, strings.NewReader(""), IO{Out: &bytes.Buffer{}, Err: &bytes.Buffer{}}); err != nil {
+	if err := (Launcher{OBISettle: time.Nanosecond}).Run(context.Background(), model.TargetDefinition{Runtime: "docker_compose"}, dir, "http://127.0.0.1:4318", definition, strings.NewReader(""), IO{Out: &bytes.Buffer{}, Err: &bytes.Buffer{}}); err != nil {
 		t.Fatal(err)
 	}
 	commands, _ := os.ReadFile(log)
@@ -107,7 +108,7 @@ case "$*" in *"apply -f -"*) cat >> "$FAKE_MANIFESTS";; *) cat;; esac
 	t.Setenv("LAMPLIGHT_RUNNER_IMAGE", "lamplight:test")
 	definition := &model.InstrumentationDefinition{Image: "otel/ebpf-instrument:v0.11.0", OpenPorts: []int{8080}, ContextPropagation: "all"}
 	target := model.TargetDefinition{Runtime: "kubernetes", Kubernetes: model.KubernetesTarget{Namespace: "shop"}}
-	if err := (Launcher{}).Run(context.Background(), target, dir, "http://127.0.0.1:4318", definition, strings.NewReader(""), IO{Out: &bytes.Buffer{}, Err: &bytes.Buffer{}}); err != nil {
+	if err := (Launcher{OBISettle: time.Nanosecond}).Run(context.Background(), target, dir, "http://127.0.0.1:4318", definition, strings.NewReader(""), IO{Out: &bytes.Buffer{}, Err: &bytes.Buffer{}}); err != nil {
 		t.Fatal(err)
 	}
 	body, _ := os.ReadFile(manifests)
