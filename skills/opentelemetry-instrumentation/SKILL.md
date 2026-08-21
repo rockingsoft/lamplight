@@ -1,12 +1,14 @@
 ---
 name: opentelemetry-instrumentation
-description: Instrument applications with OpenTelemetry for production debugging and trace-based testing. Use when adding or auditing automatic instrumentation, SDK initialization, OTLP exporters, context propagation, Collector connectivity, environment-specific telemetry profiles, or useful custom spans. Do not use merely to query an observability backend or author Lamplight tests.
+description: Instrument applications with OpenTelemetry for production debugging and executable telemetry contracts. Use when adding or auditing automatic instrumentation, SDK initialization, OTLP exporters, context propagation, Collector connectivity, environment-specific telemetry profiles, or spans and attributes required by Lamplight Wick tests. Do not use merely to query an observability backend or author Wick tests.
 license: MIT
 ---
 
 # OpenTelemetry instrumentation
 
 Instrument the application so its traces are useful both for operating the system and for trace-based tests. Prefer official automatic instrumentation and instrumentation libraries. Add manual spans only where they provide missing domain meaning or asynchronous context.
+
+When the repository contains Lamplight `.wick` files, read the relevant ones as contracts for expected telemetry before changing instrumentation. They identify the services, operations, attributes, types, cardinality, and timing on which tests and agents depend. The observability backend remains the source of actual telemetry; compare both before deciding what to change.
 
 ## Establish the current state
 
@@ -15,7 +17,9 @@ Inspect the repository and its runtime before changing it:
 1. Detect every deployable service, language, framework, entrypoint, dependency manager, and deployment method in scope.
 2. Inventory existing OpenTelemetry APIs, SDKs, agents, instrumentation libraries, exporters, Collector configuration, environment variables, and backend integration.
 3. Follow one representative request through inbound handling, internal business work, outbound HTTP/RPC, database, messaging, and background processing.
-4. Separate confirmed gaps from unverified assumptions. Preserve working instrumentation and avoid initializing a second SDK or provider.
+4. Inspect relevant `.wick` files and map each span predicate to the instrumentation expected to produce it. Mark missing files or unverified predicates explicitly.
+5. Compare the Wick contract with a representative trace from the backend when access is available.
+6. Separate confirmed gaps from unverified assumptions. Preserve working instrumentation and avoid initializing a second SDK or provider.
 
 Read [references/setup-workflow.md](references/setup-workflow.md) when installing or repairing automatic instrumentation, SDK/exporter setup, propagation, or Collector connectivity.
 
@@ -53,8 +57,14 @@ Verify observable behavior, not only compilation:
 5. Confirm error recording with a safe failing operation when appropriate.
 6. For `traced`, confirm the trace ID received from Lamplight remains the trace ID exported by downstream services.
 7. Check for duplicate spans, missing parents, accidental new roots, sensitive attributes, exporter errors, and unexpected telemetry volume.
+8. Re-run the relevant Wick contract when authorized and confirm its predicates match the normalized evidence without weakening meaningful assertions.
 
 Do not declare instrumentation complete from application logs saying an exporter started. A successful verification includes backend or collector evidence for a real trace.
+
+Do not add instrumentation merely because an old Wick expects it. If the
+contract and current behavior disagree, determine whether the intended product
+behavior, telemetry design, or Wick definition changed. Update the owning layer
+and keep the reason explicit.
 
 ## Safety and scope
 
@@ -72,6 +82,7 @@ Distinguish:
 - SDK, exporter, propagator, Collector, and resource configuration;
 - profile behavior for `dev`, `traced`, and `prod`;
 - manual spans and the specific observability gap each fills;
+- Wick contracts inspected and the expected telemetry they establish;
+- differences between Wick expectations and backend evidence;
 - local validation, live export verification, and anything not tested;
 - expected production overhead, sampling, and rollout considerations.
-
