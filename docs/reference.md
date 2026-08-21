@@ -186,7 +186,7 @@ At most one `http_client` block is allowed inside `project`.
 | `tls_skip_verify` | no | literal boolean | `false` | Disables certificate verification and emits a warning when true. |
 
 There is no per-step HTTP client configuration and no operation retry setting
-in the MVP.
+in the current interface.
 
 ## 3. Tempo datasource
 
