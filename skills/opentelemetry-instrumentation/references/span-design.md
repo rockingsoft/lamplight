@@ -70,6 +70,13 @@ A useful trace should let an operator or test author answer:
 
 When a trace-based test will depend on a manual span, treat its name, kind, and selected attributes as an observable contract. Add an instrumentation test that checks propagation and essential fields without snapshotting every incidental attribute.
 
+If the repository already has Lamplight Wick tests, use their `matching`,
+`span_assertions`, quantity, and observation-window fields to understand the
+existing contract before renaming a span or attribute. Verify those
+expectations against actual backend telemetry. Preserve meaningful contracts,
+but do not duplicate spans or retain misleading telemetry solely because a
+stale Wick still selects it; update the owning contract when intent changed.
+
 ## Review checklist
 
 - Automatic and library instrumentation was evaluated first.
@@ -82,4 +89,3 @@ When a trace-based test will depend on a manual span, treat its name, kind, and 
 - Error status describes the operation rather than blindly mirroring an exception.
 - It does not duplicate an existing span.
 - It helps both incident debugging and resilient trace assertions.
-

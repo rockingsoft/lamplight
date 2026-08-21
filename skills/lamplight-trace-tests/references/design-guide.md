@@ -6,6 +6,12 @@ Traditional API tests prove that an input produced an output. A trace-based test
 
 This makes trace-based tests especially useful for integration and end-to-end behavior that is difficult to observe from the response alone: message publication, database access, downstream calls, retries, fan-out, and third-party interactions.
 
+In an agent workflow, the Wick definition is the expected-telemetry contract,
+not the source of actual telemetry. Read it before querying the observability
+backend to identify the relevant workflow, services, operations, attributes,
+types, cardinality, and timing. Use the backend to determine what was actually
+emitted and ingested, then use Lamplight to execute the comparison repeatably.
+
 ## Start from a transaction, not a span
 
 Write the observable contract in plain language first. For example:
@@ -123,6 +129,11 @@ A missing expected span can mean either a product defect or an observability def
 
 Trace-based tests also expose instrumentation weaknesses. Missing `service.name`, incorrect span kinds, unstable names, absent semantic attributes, broken parent context, and sensitive attributes should be corrected in instrumentation rather than worked around with fragile assertions.
 
+An existing Wick can also be stale. When actual telemetry consistently differs,
+decide which contract is authoritative before changing code: product behavior,
+instrumentation semantics, and the Wick may have evolved independently. Do not
+add duplicate or misleading spans solely to make an outdated predicate pass.
+
 ## Review checklist
 
 - Does the test state a business or system behavior rather than mirror a trace snapshot?
@@ -135,4 +146,3 @@ Trace-based tests also expose instrumentation weaknesses. Missing `service.name`
 - Does a failure point to a useful layer or invariant?
 - Are secrets and sensitive telemetry excluded?
 - Does the test avoid unsupported relationship, event, link, or aggregate semantics?
-

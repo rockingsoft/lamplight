@@ -4,18 +4,27 @@
   <img src="assets/lamplight-keeper.svg" alt="Lamplight's lighthouse keeper holding a glowing lantern" width="320">
 </p>
 
-Lamplight is a local-first, declarative test runner for distributed systems.
-It triggers real workflows and checks both their responses and the telemetry
-they generate, so an integration test can verify what happened across service
-boundaries instead of stopping at the first HTTP response.
+Lamplight gives coding agents executable contracts for your application's
+telemetry.
 
-Tests are written in Wick, the Lamplight DSL. Lamplight runs as a single CLI
-process: there is no Lamplight server, database, dashboard, account, or cloud
+Tests are written in Wick, the Lamplight DSL. A Wick definition describes a
+real workflow, the response it should produce, and the OpenTelemetry evidence
+that should exist when the workflow completes. Lamplight runs the test and
+verifies that evidence against your configured observability backend.
+
+This helps agents determine whether instrumentation is correct, whether trace
+context survives service boundaries, and whether a code change preserves the
+runtime signals your system depends on. The same Wick files tell agents which
+services, spans, attributes, outcomes, and cardinality matter when they
+investigate telemetry directly in the backend.
+
+Lamplight does not replace your observability backend. Tempo, Jaeger, Datadog,
+and other platforms store and expose actual telemetry; Lamplight turns the
+telemetry you expect into repeatable, agent-readable tests.
+
+Lamplight is functional early-stage software. It runs as a single local CLI
+process, with no Lamplight server, database, dashboard, account, or cloud
 dependency to operate.
-
-Lamplight is functional early-stage software. It is ready to use and has an
-automated suite covering the CLI, DSL, triggers, trace polling, datasource
-adapters, artifacts, redaction, renderers, and MCP tools.
 
 Lamplight is a complete rewrite of the original
 [Tracetest](https://github.com/kubeshop/tracetest), led by one of its original
@@ -149,6 +158,20 @@ and rollback to avoid silently overwriting concurrent or invalid changes. See
 the [MCP server guide](docs/mcp.md) for its tools, project scoping, targets, and
 secret-handling guidance.
 
+Once connected, try prompts such as:
+
+> Read the Wick tests and tell me which telemetry proves that checkout
+> completed successfully.
+
+> Run the smoke tests and use the failed telemetry contract to identify which
+> layer I should investigate.
+
+> Compare this trace with the Wick contract and check whether instrumentation
+> still emits the required spans and attributes.
+
+> Add a regression test that ensures the order event is published exactly
+> once.
+
 You can also install the repository's agent skills. They teach an agent how to
 design resilient trace-based tests and how to instrument an application with
 OpenTelemetry:
@@ -161,12 +184,15 @@ npx skills add rockingsoft/lamplight \
 
 Add `--global` to make the skills available across projects.
 
-## How Lamplight tests a distributed workflow
+## Wick as an executable telemetry contract
 
-Every step executes a trigger, exposes its result to checks and later steps,
-and creates an independent W3C trace context when trace assertions are used.
+A Wick test documents the runtime evidence that proves a workflow is behaving
+correctly. Every step executes a trigger, exposes its result to checks and
+later steps, and creates an independent W3C trace context when trace assertions
+are used.
+
 For example, this test verifies both an API response and the corresponding
-service span:
+service operation:
 
 ```hcl
 variable "BASE_URL" {
@@ -199,15 +225,30 @@ test "create_order" {
 
       spans {
         matching = (
-          span.name == "POST /orders" &&
-          span.attributes["http.status_code"] == 201
+          resource["service.name"] == "orders" &&
+          span.name == "create order" &&
+          span.attributes["order.status"] == "created"
         )
-        at_least = 1
+        exactly = 1
       }
     }
   }
 }
 ```
+
+From this definition, an agent can learn that:
+
+- the workflow begins with `POST /orders`;
+- the `orders` service must participate;
+- `create order` is the operation that proves processing occurred;
+- `order.status = created` is the relevant outcome;
+- the operation must happen exactly once.
+
+Wick is the source of expected telemetry. The observability backend is the
+source of actual telemetry. When an agent can access both, it can use the
+contract to guide trace searches, compare observed signals with expected
+behavior, and decide whether a failure belongs to the application,
+instrumentation, export pipeline, backend, or test definition.
 
 Supply secrets through environment variables so they do not remain in shell
 history or agent transcripts:
@@ -225,6 +266,27 @@ Lamplight supports direct trace-by-ID integrations and local OTLP ingestion
 adapters, as well as local, Docker Compose, and Kubernetes execution targets.
 See the [DSL and CLI reference](docs/reference.md) for the current trigger,
 datasource, target, expression, and configuration contracts.
+
+## The agent feedback loop
+
+```text
+Agent reads the code and Wick contracts
+                  ↓
+Agent identifies the expected behavior and telemetry
+                  ↓
+Lamplight triggers the workflow
+                  ↓
+The application exports OpenTelemetry data
+                  ↓
+The observability backend exposes actual telemetry
+                  ↓
+Lamplight verifies the contract
+                  ↓
+Agent diagnoses, changes, and verifies the code
+```
+
+Lamplight does not replace unit tests, logs, or observability platforms. It
+makes telemetry expectations explicit, executable, and useful to coding agents.
 
 ## Everyday commands
 
