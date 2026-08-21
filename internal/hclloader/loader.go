@@ -43,6 +43,11 @@ func (loader Loader) LoadProject(options config.Options) (*model.ProjectDefiniti
 		diags = append(diags, ds...)
 		definition.Datasource = datasource
 	}
+	if root.InstrumentationRaw != nil {
+		instrumentation, ds := parseInstrumentation(root.InstrumentationRaw)
+		diags = append(diags, ds...)
+		definition.Instrumentation = instrumentation
+	}
 	for _, block := range root.DefinitionRaw {
 		switch block.Type {
 		case "variable":
@@ -107,7 +112,61 @@ func (loader Loader) LoadProject(options config.Options) (*model.ProjectDefiniti
 		}
 	}
 	diags = append(diags, validateReferences(definition)...)
+	if definition.Instrumentation != nil && (definition.Datasource == nil || definition.Datasource.Kind != "otlp") {
+		diags = append(diags, diagnostic.Error(diagnostic.CodeConfig, "OBI instrumentation requires the embedded OTLP datasource", root.InstrumentationRaw.DefRange, "add datasource \"otlp\" with a local HTTP endpoint"))
+	}
 	return definition, diags
+}
+
+func parseInstrumentation(block *hcl.Block) (*model.InstrumentationDefinition, []model.Diagnostic) {
+	if len(block.Labels) != 1 || block.Labels[0] != "obi" {
+		return nil, []model.Diagnostic{diagnostic.Error(diagnostic.CodeSchema, fmt.Sprintf("unsupported instrumentation %q", strings.Join(block.Labels, " ")), block.DefRange, "use instrumentation \"obi\"")}
+	}
+	content, hclDiags := block.Body.Content(&hcl.BodySchema{Attributes: []hcl.AttributeSchema{{Name: "open_ports", Required: true}, {Name: "image"}, {Name: "context_propagation"}}})
+	diags := diagnostic.FromHCL(hclDiags, diagnostic.CodeSchema)
+	result := &model.InstrumentationDefinition{Kind: "obi", Image: "docker.io/otel/ebpf-instrument:v0.11.0", ContextPropagation: "all", Range: model.Range(block.DefRange)}
+	if attr, ok := content.Attributes["image"]; ok {
+		result.Image, diags = appendLiteralString(result.Image, diags, attr.Expr)
+	}
+	if attr, ok := content.Attributes["context_propagation"]; ok {
+		result.ContextPropagation, diags = appendLiteralString(result.ContextPropagation, diags, attr.Expr)
+		if result.ContextPropagation != "all" && result.ContextPropagation != "headers" && result.ContextPropagation != "disabled" {
+			diags = append(diags, diagnostic.Error(diagnostic.CodeSchema, "instrumentation.context_propagation must be all, headers, or disabled", attr.Expr.Range(), "use all for end-to-end Lamplight correlation"))
+		}
+	}
+	if attr, ok := content.Attributes["open_ports"]; ok {
+		value, ds := attr.Expr.Value(nil)
+		collection := false
+		if !ds.HasErrors() && value != cty.NilVal {
+			collection = value.Type().IsTupleType() || value.Type().IsListType() || value.Type().IsSetType()
+		}
+		if ds.HasErrors() || value == cty.NilVal || !value.IsKnown() || value.IsNull() || !collection {
+			diags = append(diags, diagnostic.Error(diagnostic.CodeSchema, "instrumentation.open_ports must be a literal list of ports", attr.Expr.Range(), "use open_ports = [8080]"))
+		} else {
+			it := value.ElementIterator()
+			seen := map[int]bool{}
+			for it.Next() {
+				_, item := it.Element()
+				if item.Type() != cty.Number {
+					diags = append(diags, diagnostic.Error(diagnostic.CodeSchema, "instrumentation.open_ports entries must be integers", attr.Expr.Range(), "use ports from 1 through 65535"))
+					continue
+				}
+				n, accuracy := item.AsBigFloat().Int64()
+				if accuracy != 0 || n < 1 || n > 65535 {
+					diags = append(diags, diagnostic.Error(diagnostic.CodeSchema, "instrumentation.open_ports entries must be valid ports", attr.Expr.Range(), "use ports from 1 through 65535"))
+					continue
+				}
+				if !seen[int(n)] {
+					result.OpenPorts = append(result.OpenPorts, int(n))
+					seen[int(n)] = true
+				}
+			}
+		}
+	}
+	if len(result.OpenPorts) == 0 {
+		diags = append(diags, diagnostic.Error(diagnostic.CodeSchema, "instrumentation.open_ports must not be empty", block.DefRange, "list at least one application port"))
+	}
+	return result, diags
 }
 
 func targetValueMatches(typeName string, value cty.Value) bool {

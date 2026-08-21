@@ -155,6 +155,59 @@ Both runtimes choose the executor image matching the CLI build automatically.
 Development builds can set `LAMPLIGHT_RUNNER_IMAGE`; this is an operator escape
 hatch, not project configuration.
 
+### 2.3 Zero-code instrumentation
+
+Lamplight can start a pinned OpenTelemetry eBPF Instrumentation (OBI) agent for
+the duration of a run. Nothing is installed or configured in the application:
+it does not need an OpenTelemetry SDK, exporter, OTEL environment variables,
+Collector, Jaeger, or another tracing backend. The only configuration belongs
+to Lamplight and identifies the ports OBI should observe:
+
+```hcl
+datasource "otlp" {
+  endpoint = "http://127.0.0.1:4318"
+}
+
+instrumentation "obi" {
+  open_ports          = [8080]
+  context_propagation = "all"
+}
+```
+
+The embedded OTLP/HTTP receiver accepts traces at `/v1/traces` and keeps them
+only for the current run. OBI is started before the trigger and removed after
+the executor exits. Lamplight uses OBI `v0.11.0` by default; `image` can pin an
+explicit reviewed image:
+
+```hcl
+instrumentation "obi" {
+  image      = "docker.io/otel/ebpf-instrument:v0.11.0"
+  open_ports = [8080, 9090]
+}
+```
+
+`open_ports` is a non-empty list of application listening ports. Supported
+`context_propagation` values are `all` (default), `headers`, and `disabled`.
+Use `all` when downstream calls must remain in Lamplight's authoritative W3C
+trace. OBI instrumentation requires `datasource "otlp"`; it cannot be combined
+with a direct-query datasource.
+
+For a local target, OBI requires a Linux host and Docker. Lamplight runs it
+with host networking, the host PID namespace, and privileged eBPF access. A
+non-Linux local run fails before executing the test.
+
+For Docker Compose, Lamplight attaches the OBI container to the application
+network and exports directly to the ephemeral executor. For Kubernetes it
+creates an ephemeral privileged, host-networked OBI DaemonSet and an internal
+Service for the executor. The target service account must be authorized to
+create and delete Pods, Services, and DaemonSets. Cluster admission policy must
+permit `hostPID`, `hostNetwork`, privileged containers, and read-only host
+mounts of `/sys/fs/cgroup` and `/sys/kernel/security`.
+
+Zero-code instrumentation observes supported protocol and library boundaries;
+it does not invent domain spans for internal business operations. Assertions
+should use the spans OBI actually emits.
+
 Target variables must refer to declared variables and match their types. Value
 precedence is `--var`, `LAMPLIGHT_VAR_*`, selected target, then the variable
 default. Targets cannot assign sensitive variables. Variables and expressions
@@ -172,7 +225,7 @@ Properties:
 `base_dir` must exist and be a directory when the project is loaded. It cannot
 reference `var` because discovery happens before runtime variable resolution.
 
-### 2.3 `http_client` block
+### 2.4 `http_client` block
 
 At most one `http_client` block is allowed inside `project`.
 

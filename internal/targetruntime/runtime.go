@@ -6,8 +6,10 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net/url"
 	"os/exec"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -24,22 +26,22 @@ type Launcher struct {
 	Command func(context.Context, string, ...string) *exec.Cmd
 }
 
-func (r Launcher) Run(ctx context.Context, target model.TargetDefinition, configDir string, input io.Reader, streams IO) error {
+func (r Launcher) Run(ctx context.Context, target model.TargetDefinition, configDir string, otlpEndpoint string, instrumentation *model.InstrumentationDefinition, input io.Reader, streams IO) error {
 	command := r.Command
 	if command == nil {
 		command = exec.CommandContext
 	}
 	switch target.Runtime {
 	case "docker_compose":
-		return r.dockerCompose(ctx, command, target, configDir, input, streams)
+		return r.dockerCompose(ctx, command, target, configDir, otlpEndpoint, instrumentation, input, streams)
 	case "kubernetes":
-		return r.kubernetes(ctx, command, target, input, streams)
+		return r.kubernetes(ctx, command, target, otlpEndpoint, instrumentation, input, streams)
 	default:
 		return fmt.Errorf("unsupported remote runtime %q", target.Runtime)
 	}
 }
 
-func (r Launcher) dockerCompose(ctx context.Context, command func(context.Context, string, ...string) *exec.Cmd, target model.TargetDefinition, configDir string, input io.Reader, streams IO) error {
+func (r Launcher) dockerCompose(ctx context.Context, command func(context.Context, string, ...string) *exec.Cmd, target model.TargetDefinition, configDir string, otlpEndpoint string, instrumentation *model.InstrumentationDefinition, input io.Reader, streams IO) error {
 	composeArgs := []string{"compose"}
 	if target.Compose.Project != "" {
 		composeArgs = append(composeArgs, "--project-name", target.Compose.Project)
@@ -84,6 +86,21 @@ func (r Launcher) dockerCompose(ctx context.Context, command func(context.Contex
 			return fmt.Errorf("connect executor to network %s: %w: %s", network, err, strings.TrimSpace(string(out)))
 		}
 	}
+	if instrumentation != nil {
+		port, err := endpointPort(otlpEndpoint)
+		if err != nil {
+			return err
+		}
+		obiName := name + "-obi"
+		defer func() { _ = command(context.WithoutCancel(ctx), "docker", "rm", "-f", obiName).Run() }()
+		obiArgs := []string{"run", "-d", "--name", obiName, "--label", "io.lamplight.managed=true", "--pid=host", "--privileged", "--network", networks[0], "-v", "/sys/fs/cgroup:/sys/fs/cgroup:ro", "-v", "/sys/kernel/security:/sys/kernel/security:ro", "-e", "OTEL_EBPF_OPEN_PORT=" + ports(instrumentation.OpenPorts), "-e", "OTEL_EXPORTER_OTLP_ENDPOINT=http://" + name + ":" + port, "-e", "OTEL_EBPF_BPF_CONTEXT_PROPAGATION=" + instrumentation.ContextPropagation, instrumentation.Image}
+		if out, err := command(ctx, "docker", obiArgs...).CombinedOutput(); err != nil {
+			return fmt.Errorf("start OBI instrumentation: %w: %s", err, strings.TrimSpace(string(out)))
+		}
+		if err := waitDockerOBI(ctx, command, obiName); err != nil {
+			return err
+		}
+	}
 	start := command(ctx, "docker", "start", "--attach", "--interactive", name)
 	start.Stdin, start.Stdout, start.Stderr = input, streams.Out, streams.Err
 	if err := start.Run(); err != nil {
@@ -92,7 +109,7 @@ func (r Launcher) dockerCompose(ctx context.Context, command func(context.Contex
 	return nil
 }
 
-func (r Launcher) kubernetes(ctx context.Context, command func(context.Context, string, ...string) *exec.Cmd, target model.TargetDefinition, input io.Reader, streams IO) error {
+func (r Launcher) kubernetes(ctx context.Context, command func(context.Context, string, ...string) *exec.Cmd, target model.TargetDefinition, otlpEndpoint string, instrumentation *model.InstrumentationDefinition, input io.Reader, streams IO) error {
 	name := fmt.Sprintf("lamplight-run-%d", time.Now().Unix())
 	placement := []string{}
 	if target.Kubernetes.Context != "" {
@@ -103,11 +120,34 @@ func (r Launcher) kubernetes(ctx context.Context, command func(context.Context, 
 	}
 	deleteArgs := append(append([]string{}, placement...), "delete", "pod", name, "--ignore-not-found=true", "--wait=false")
 	defer func() { _ = command(context.WithoutCancel(ctx), "kubectl", deleteArgs...).Run() }()
+	if instrumentation != nil {
+		port, err := endpointPort(otlpEndpoint)
+		if err != nil {
+			return err
+		}
+		resources := kubernetesOBIResources(name, target.Kubernetes.Namespace, port, instrumentation)
+		applyArgs := append(append([]string{}, placement...), "apply", "-f", "-")
+		apply := command(ctx, "kubectl", applyArgs...)
+		apply.Stdin = strings.NewReader(resources)
+		if out, err := apply.CombinedOutput(); err != nil {
+			return fmt.Errorf("start OBI instrumentation: %w: %s", err, strings.TrimSpace(string(out)))
+		}
+		cleanupArgs := append(append([]string{}, placement...), "delete", "daemonset,service", name+"-obi", "--ignore-not-found=true", "--wait=false")
+		defer func() { _ = command(context.WithoutCancel(ctx), "kubectl", cleanupArgs...).Run() }()
+		rolloutArgs := append(append([]string{}, placement...), "rollout", "status", "daemonset/"+name+"-obi", "--timeout=60s")
+		if out, err := command(ctx, "kubectl", rolloutArgs...).CombinedOutput(); err != nil {
+			return fmt.Errorf("wait for OBI instrumentation: %w: %s", err, strings.TrimSpace(string(out)))
+		}
+	}
 
 	args := append([]string{}, placement...)
 	args = append(args, "run", name, "--attach", "--stdin", "--rm", "--restart=Never", "--image", buildinfo.ExecutorImage())
-	if target.Kubernetes.ServiceAccount != "" {
-		override, _ := json.Marshal(map[string]any{"spec": map[string]any{"serviceAccountName": target.Kubernetes.ServiceAccount}})
+	if target.Kubernetes.ServiceAccount != "" || instrumentation != nil {
+		spec := map[string]any{}
+		if target.Kubernetes.ServiceAccount != "" {
+			spec["serviceAccountName"] = target.Kubernetes.ServiceAccount
+		}
+		override, _ := json.Marshal(map[string]any{"metadata": map[string]any{"labels": map[string]string{"io.lamplight.run": name}}, "spec": spec})
 		args = append(args, "--overrides", string(override))
 	}
 	args = append(args, "--command", "--", "lamplight", "executor")
@@ -118,6 +158,56 @@ func (r Launcher) kubernetes(ctx context.Context, command func(context.Context, 
 	}
 	return nil
 }
+
+func endpointPort(endpoint string) (string, error) {
+	u, err := url.Parse(endpoint)
+	if err != nil || u.Port() == "" {
+		return "", fmt.Errorf("embedded OTLP endpoint must include a port: %q", endpoint)
+	}
+	return u.Port(), nil
+}
+
+func ports(values []int) string {
+	parts := make([]string, len(values))
+	for i, value := range values {
+		parts[i] = strconv.Itoa(value)
+	}
+	return strings.Join(parts, ",")
+}
+
+func waitDockerOBI(ctx context.Context, command func(context.Context, string, ...string) *exec.Cmd, name string) error {
+	deadline := time.NewTimer(20 * time.Second)
+	defer deadline.Stop()
+	ticker := time.NewTicker(250 * time.Millisecond)
+	defer ticker.Stop()
+	for {
+		output, err := command(ctx, "docker", "logs", name).CombinedOutput()
+		if err == nil && strings.Contains(string(output), "Launching p.Tracer") {
+			return nil
+		}
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-deadline.C:
+			return fmt.Errorf("OBI instrumentation did not attach before the 20s startup deadline: %s", strings.TrimSpace(string(output)))
+		case <-ticker.C:
+		}
+	}
+}
+
+func kubernetesOBIResources(name, namespace, port string, instrumentation *model.InstrumentationDefinition) string {
+	metadata := map[string]any{"name": name + "-obi"}
+	if namespace != "" {
+		metadata["namespace"] = namespace
+	}
+	service := map[string]any{"apiVersion": "v1", "kind": "Service", "metadata": metadata, "spec": map[string]any{"selector": map[string]string{"io.lamplight.run": name}, "ports": []map[string]any{{"port": mustAtoi(port), "targetPort": mustAtoi(port)}}}}
+	daemon := map[string]any{"apiVersion": "apps/v1", "kind": "DaemonSet", "metadata": metadata, "spec": map[string]any{"selector": map[string]any{"matchLabels": map[string]string{"io.lamplight.obi": name}}, "template": map[string]any{"metadata": map[string]any{"labels": map[string]string{"io.lamplight.obi": name}}, "spec": map[string]any{"hostPID": true, "hostNetwork": true, "dnsPolicy": "ClusterFirstWithHostNet", "tolerations": []map[string]any{{"operator": "Exists"}}, "containers": []map[string]any{{"name": "obi", "image": instrumentation.Image, "securityContext": map[string]any{"privileged": true, "runAsUser": 0}, "env": []map[string]string{{"name": "OTEL_EBPF_OPEN_PORT", "value": ports(instrumentation.OpenPorts)}, {"name": "OTEL_EXPORTER_OTLP_ENDPOINT", "value": "http://" + name + "-obi:" + port}, {"name": "OTEL_EBPF_BPF_CONTEXT_PROPAGATION", "value": instrumentation.ContextPropagation}, {"name": "OTEL_EBPF_KUBE_METADATA_ENABLE", "value": "false"}}, "volumeMounts": []map[string]string{{"name": "cgroup", "mountPath": "/sys/fs/cgroup"}, {"name": "security", "mountPath": "/sys/kernel/security"}}}}, "volumes": []map[string]any{{"name": "cgroup", "hostPath": map[string]string{"path": "/sys/fs/cgroup"}}, {"name": "security", "hostPath": map[string]string{"path": "/sys/kernel/security"}}}}}}}
+	a, _ := json.Marshal(service)
+	b, _ := json.Marshal(daemon)
+	return string(a) + "\n---\n" + string(b) + "\n"
+}
+
+func mustAtoi(value string) int { n, _ := strconv.Atoi(value); return n }
 
 func commandError(action string, err error) error {
 	var exit *exec.ExitError

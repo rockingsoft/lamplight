@@ -27,7 +27,7 @@ esac
 	t.Setenv("FAKE_LOG", log)
 	t.Setenv("LAMPLIGHT_RUNNER_IMAGE", "lamplight:test")
 	var out bytes.Buffer
-	err := (Launcher{}).Run(context.Background(), model.TargetDefinition{Runtime: "docker_compose"}, dir, strings.NewReader("requests"), IO{Out: &out, Err: &out})
+	err := (Launcher{}).Run(context.Background(), model.TargetDefinition{Runtime: "docker_compose"}, dir, "", nil, strings.NewReader("requests"), IO{Out: &out, Err: &out})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -51,7 +51,7 @@ func TestKubernetesUsesConfiguredPlacement(t *testing.T) {
 	t.Setenv("FAKE_LOG", log)
 	t.Setenv("LAMPLIGHT_RUNNER_IMAGE", "lamplight:test")
 	target := model.TargetDefinition{Runtime: "kubernetes", Kubernetes: model.KubernetesTarget{Context: "prod", Namespace: "shop", ServiceAccount: "runner"}}
-	if err := (Launcher{}).Run(context.Background(), target, dir, strings.NewReader("requests"), IO{Out: &bytes.Buffer{}, Err: &bytes.Buffer{}}); err != nil {
+	if err := (Launcher{}).Run(context.Background(), target, dir, "", nil, strings.NewReader("requests"), IO{Out: &bytes.Buffer{}, Err: &bytes.Buffer{}}); err != nil {
 		t.Fatal(err)
 	}
 	commands, _ := os.ReadFile(log)
@@ -59,6 +59,62 @@ func TestKubernetesUsesConfiguredPlacement(t *testing.T) {
 	for _, want := range []string{"--context prod", "--namespace shop", "run lamplight-run-", "--image lamplight:test", "serviceAccountName", "lamplight executor", "delete pod lamplight-run-", "--ignore-not-found=true", "--wait=false"} {
 		if !strings.Contains(got, want) {
 			t.Fatalf("command %q missing %q", got, want)
+		}
+	}
+}
+
+func TestDockerComposeStartsPinnedOBI(t *testing.T) {
+	dir := t.TempDir()
+	log := filepath.Join(dir, "log")
+	script := `#!/bin/sh
+echo "$@" >> "$FAKE_LOG"
+case "$1 $2" in
+  "compose ps") echo app-id ;;
+  "inspect --format") echo app_default ;;
+  "start --attach") cat ;;
+  "logs lamplight-run-"*) echo "Launching p.Tracer" ;;
+esac
+`
+	writeExecutable(t, filepath.Join(dir, "docker"), script)
+	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	t.Setenv("FAKE_LOG", log)
+	t.Setenv("LAMPLIGHT_RUNNER_IMAGE", "lamplight:test")
+	definition := &model.InstrumentationDefinition{Image: "otel/ebpf-instrument:v0.11.0", OpenPorts: []int{8080, 9090}, ContextPropagation: "all"}
+	if err := (Launcher{}).Run(context.Background(), model.TargetDefinition{Runtime: "docker_compose"}, dir, "http://127.0.0.1:4318", definition, strings.NewReader(""), IO{Out: &bytes.Buffer{}, Err: &bytes.Buffer{}}); err != nil {
+		t.Fatal(err)
+	}
+	commands, _ := os.ReadFile(log)
+	got := string(commands)
+	for _, want := range []string{"--pid=host --privileged", "OTEL_EBPF_OPEN_PORT=8080,9090", "OTEL_EXPORTER_OTLP_ENDPOINT=http://lamplight-run-", "otel/ebpf-instrument:v0.11.0"} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("commands %q missing %q", got, want)
+		}
+	}
+}
+
+func TestKubernetesCreatesOBIDaemonSetAndService(t *testing.T) {
+	dir := t.TempDir()
+	log := filepath.Join(dir, "log")
+	manifests := filepath.Join(dir, "manifests")
+	script := `#!/bin/sh
+echo "$@" >> "$FAKE_LOG"
+case "$*" in *"apply -f -"*) cat >> "$FAKE_MANIFESTS";; *) cat;; esac
+`
+	writeExecutable(t, filepath.Join(dir, "kubectl"), script)
+	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	t.Setenv("FAKE_LOG", log)
+	t.Setenv("FAKE_MANIFESTS", manifests)
+	t.Setenv("LAMPLIGHT_RUNNER_IMAGE", "lamplight:test")
+	definition := &model.InstrumentationDefinition{Image: "otel/ebpf-instrument:v0.11.0", OpenPorts: []int{8080}, ContextPropagation: "all"}
+	target := model.TargetDefinition{Runtime: "kubernetes", Kubernetes: model.KubernetesTarget{Namespace: "shop"}}
+	if err := (Launcher{}).Run(context.Background(), target, dir, "http://127.0.0.1:4318", definition, strings.NewReader(""), IO{Out: &bytes.Buffer{}, Err: &bytes.Buffer{}}); err != nil {
+		t.Fatal(err)
+	}
+	body, _ := os.ReadFile(manifests)
+	got := string(body)
+	for _, want := range []string{`"kind":"Service"`, `"kind":"DaemonSet"`, `"hostPID":true`, `"hostNetwork":true`, `OTEL_EBPF_OPEN_PORT`, `otel/ebpf-instrument:v0.11.0`} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("manifest %q missing %q", got, want)
 		}
 	}
 }
