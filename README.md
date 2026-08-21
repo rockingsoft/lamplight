@@ -5,21 +5,19 @@
 </p>
 
 Lamplight is a local-first, declarative test runner for distributed systems.
-It triggers real workflows and checks both their responses and the traces they
-produce, so an integration test can verify what happened across service
+It triggers real workflows and checks both their responses and the telemetry
+they generate, so an integration test can verify what happened across service
 boundaries instead of stopping at the first HTTP response.
 
-Tests are written in the Lamplight DSL, which uses HCL syntax. Lamplight runs as
-a single CLI process: there is no Lamplight server, database, dashboard,
-account, or cloud dependency to operate.
+Tests are written in Wick, the Lamplight DSL. Lamplight runs as a single CLI
+process: there is no Lamplight server, database, dashboard, account, or cloud
+dependency to operate.
 
 Lamplight is functional early-stage software. It is ready to use and has an
 automated suite covering the CLI, DSL, triggers, trace polling, datasource
-adapters, artifacts, redaction, renderers, and MCP tools. Its public DSL and
-JSON schema are versioned interfaces, but releases can still evolve quickly;
-review the release notes before upgrading.
+adapters, artifacts, redaction, renderers, and MCP tools.
 
-Lamplight is a new-generation fork and reimplementation of the original
+Lamplight is a complete rewrite of the original
 [Tracetest](https://github.com/kubeshop/tracetest), led by one of its original
 maintainers. See [Provenance](docs/provenance.md) for the project history and
 licensing details.
@@ -37,8 +35,7 @@ lamplight version
 
 The installer detects `amd64` or `arm64`, verifies the release checksum,
 installs to `~/.local/bin`, and adds that directory to the current shell's
-`PATH` when needed. The shell configuration change is idempotent. Open a new
-terminal after the first installation.
+`PATH` when needed. The shell configuration change is idempotent.
 
 To choose another destination or pin a release:
 
