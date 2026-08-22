@@ -76,3 +76,45 @@ target "bad" {
 		t.Fatalf("expected diagnostics, got %#v", diags)
 	}
 }
+
+func TestLoadOBIInstrumentation(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.Mkdir(filepath.Join(dir, "tests"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	source := `project { base_dir = "tests" }
+datasource "otlp" { endpoint = "http://127.0.0.1:4318" }
+instrumentation "obi" {
+  open_ports = [8080, 9090]
+  context_propagation = "headers"
+}
+`
+	if err := os.WriteFile(filepath.Join(dir, ".lamplight"), []byte(source), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	project, diags := (Loader{}).LoadProject(config.Options{WorkingDir: dir})
+	if len(diags) != 0 {
+		t.Fatalf("diagnostics: %#v", diags)
+	}
+	got := project.Instrumentation
+	if got == nil || got.Image != "docker.io/otel/ebpf-instrument:v0.11.0" || got.ContextPropagation != "headers" || len(got.OpenPorts) != 2 {
+		t.Fatalf("instrumentation: %#v", got)
+	}
+}
+
+func TestLoadOBIRequiresOTLPDatasource(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.Mkdir(filepath.Join(dir, "tests"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	source := `project { base_dir = "tests" }
+instrumentation "obi" { open_ports = [8080] }
+`
+	if err := os.WriteFile(filepath.Join(dir, ".lamplight"), []byte(source), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	_, diags := (Loader{}).LoadProject(config.Options{WorkingDir: dir})
+	if len(diags) == 0 {
+		t.Fatal("missing OTLP datasource accepted")
+	}
+}

@@ -119,9 +119,14 @@ jobs:
           set -e
 
           echo "Lamplight exit code: $exit_code"
-          jq . lamplight-result.json
+          jq -r '
+            "Lamplight status: \(.status)",
+            (.tests[] | "  \(if .status == "passed" then "✓" else "✗" end) \(.name) [\(.status)]")
+          ' lamplight-result.json
 
           if [ "$exit_code" -ne 0 ]; then
+            echo "Failed test details:" >&2
+            jq '{status, tests: [.tests[] | select(.status != "passed")]}' lamplight-result.json >&2
             echo "Expected Lamplight to exit with code 0" >&2
             exit 1
           fi
@@ -129,14 +134,15 @@ jobs:
           jq -e '
             .schema_version == 1 and
             .status == "passed" and
-            (.tests | length) == 5 and
+            (.tests | length) == 6 and
             all(.tests[]; .status == "passed") and
             ([.tests[].name] | sort) == ([
               "Import a Pokemon reading a Stream",
               "Import a Pokemon using API and MQ Worker",
               "List Pokemons",
               "List Pokemons using gRPC",
-              "Pokeshop - Add"
+              "Pokeshop - Add",
+              "web_zero_code"
             ] | sort)
           ' lamplight-result.json > /dev/null
 

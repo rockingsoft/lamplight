@@ -79,15 +79,16 @@ func Resolve(options Options) (Paths, []model.Diagnostic) {
 
 type Config struct {
 	Paths
-	BaseDir       string
-	Output        string
-	HTTPClient    model.HTTPClientConfig
-	ProxyExpr     hcl.Expression
-	ConfigFile    *hcl.File
-	ProjectRange  hcl.Range
-	DatasourceRaw *hcl.Block
-	DefinitionRaw hcl.Blocks
-	DefaultTarget string
+	BaseDir            string
+	Output             string
+	HTTPClient         model.HTTPClientConfig
+	ProxyExpr          hcl.Expression
+	ConfigFile         *hcl.File
+	ProjectRange       hcl.Range
+	DatasourceRaw      *hcl.Block
+	InstrumentationRaw *hcl.Block
+	DefinitionRaw      hcl.Blocks
+	DefaultTarget      string
 }
 
 // Load parses the root configuration and resolves its filesystem-only values.
@@ -101,7 +102,7 @@ func Load(options Options) (*Config, []model.Diagnostic) {
 	if hclDiags.HasErrors() {
 		return nil, diagnostic.FromHCL(hclDiags, diagnostic.CodeParse)
 	}
-	content, hclDiags := file.Body.Content(&hcl.BodySchema{Blocks: []hcl.BlockHeaderSchema{{Type: "project"}, {Type: "datasource", LabelNames: []string{"kind"}}, {Type: "variable", LabelNames: []string{"name"}}, {Type: "target", LabelNames: []string{"name"}}}})
+	content, hclDiags := file.Body.Content(&hcl.BodySchema{Blocks: []hcl.BlockHeaderSchema{{Type: "project"}, {Type: "datasource", LabelNames: []string{"kind"}}, {Type: "instrumentation", LabelNames: []string{"kind"}}, {Type: "variable", LabelNames: []string{"name"}}, {Type: "target", LabelNames: []string{"name"}}}})
 	diags = append(diags, diagnostic.FromHCL(hclDiags, diagnostic.CodeSchema)...)
 	var project *hcl.Block
 	for _, block := range content.Blocks {
@@ -162,14 +163,21 @@ func Load(options Options) (*Config, []model.Diagnostic) {
 	httpConfig, proxyExpr, httpDiags := parseHTTPClient(projectContent.Blocks, project.DefRange)
 	diags = append(diags, httpDiags...)
 	var datasource *hcl.Block
+	var instrumentation *hcl.Block
 	for _, block := range content.Blocks {
-		if block.Type != "datasource" {
-			continue
-		}
-		if datasource != nil {
-			diags = append(diags, diagnostic.Error(diagnostic.CodeConfig, "at most one datasource block is allowed", block.DefRange, "remove the extra datasource"))
-		} else {
-			datasource = block
+		switch block.Type {
+		case "datasource":
+			if datasource != nil {
+				diags = append(diags, diagnostic.Error(diagnostic.CodeConfig, "at most one datasource block is allowed", block.DefRange, "remove the extra datasource"))
+			} else {
+				datasource = block
+			}
+		case "instrumentation":
+			if instrumentation != nil {
+				diags = append(diags, diagnostic.Error(diagnostic.CodeConfig, "at most one instrumentation block is allowed", block.DefRange, "remove the extra instrumentation block"))
+			} else {
+				instrumentation = block
+			}
 		}
 	}
 	var definitions hcl.Blocks
@@ -178,7 +186,7 @@ func Load(options Options) (*Config, []model.Diagnostic) {
 			definitions = append(definitions, block)
 		}
 	}
-	return &Config{Paths: paths, BaseDir: base, Output: output, HTTPClient: httpConfig, ProxyExpr: proxyExpr, ConfigFile: file, ProjectRange: project.DefRange, DatasourceRaw: datasource, DefinitionRaw: definitions, DefaultTarget: defaultTarget}, diags
+	return &Config{Paths: paths, BaseDir: base, Output: output, HTTPClient: httpConfig, ProxyExpr: proxyExpr, ConfigFile: file, ProjectRange: project.DefRange, DatasourceRaw: datasource, InstrumentationRaw: instrumentation, DefinitionRaw: definitions, DefaultTarget: defaultTarget}, diags
 }
 
 func literalString(expression hcl.Expression) (string, []model.Diagnostic) {
