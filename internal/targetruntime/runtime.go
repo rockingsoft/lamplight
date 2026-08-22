@@ -183,7 +183,7 @@ func (r Launcher) obiSettle() time.Duration {
 	if r.OBISettle > 0 {
 		return r.OBISettle
 	}
-	return 2 * time.Second
+	return 10 * time.Second
 }
 
 func waitDockerOBI(ctx context.Context, command func(context.Context, string, ...string) *exec.Cmd, name string, settle time.Duration) error {
