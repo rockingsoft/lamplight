@@ -124,6 +124,29 @@ lamplight run --tag smoke
 lamplight run --fail-fast
 ```
 
+To run trace assertions without instrumenting or reconfiguring the application,
+use Lamplight's embedded OTLP receiver and OBI zero-code instrumentation. There
+is no SDK to install, no OTEL environment variables to inject, and no Collector,
+Jaeger, or other tracing backend to deploy with the application:
+
+```hcl
+datasource "otlp" {
+  endpoint = "http://127.0.0.1:4318"
+}
+
+instrumentation "obi" {
+  open_ports = [8080]
+}
+```
+
+The blocks describe the Lamplight test environment and the application ports;
+they do not change the application. During each run Lamplight creates the OBI
+agent and in-memory receiver, then removes the agent when the run finishes.
+This mode supports Linux local runs, Docker Compose targets, and Kubernetes
+targets. It uses elevated eBPF privileges and is intentionally unsupported for
+local macOS and Windows processes. See the [configuration reference](docs/reference.md#23-zero-code-instrumentation)
+for runtime requirements and Kubernetes permissions.
+
 Lamplight prints live trigger and trace-polling progress. A run continues after
 a failed test by default so it can report the complete result; use
 `--fail-fast` when an early exit is more useful.

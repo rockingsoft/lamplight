@@ -1,5 +1,5 @@
-// Package otlp implements the local OTLP/HTTP trace store used by Tracetest's
-// collector-backed integrations.
+// Package otlp implements Lamplight's embedded OTLP/HTTP trace receiver and
+// in-memory trace store.
 package otlp
 
 import (

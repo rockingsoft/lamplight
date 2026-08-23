@@ -7,6 +7,8 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"net"
+	"net/url"
 	"os"
 	"path/filepath"
 	"sort"
@@ -29,6 +31,7 @@ import (
 	"lamplight/internal/hclloader"
 	"lamplight/internal/httpstep"
 	"lamplight/internal/initcmd"
+	"lamplight/internal/instrumentation"
 	"lamplight/internal/mcpserver"
 	"lamplight/internal/model"
 	"lamplight/internal/render"
@@ -486,6 +489,7 @@ func run(ctx context.Context, args []string, streams IO) int {
 	var httpExecutor model.HTTPExecutor = httpstep.New(nil)
 	var triggers model.TriggerExecutor = triggerexecutor.New(httpExecutor)
 	var closeRemote func() error
+	var closeInstrumentation func() error
 	if target.Runtime == "local" {
 		if datasourceConfig != nil {
 			store, err := datasource.New(*datasourceConfig)
@@ -494,9 +498,19 @@ func run(ctx context.Context, args []string, streams IO) int {
 				return 1
 			}
 			runtimeProject.Datasource = store
+			if closer, ok := store.(io.Closer); ok {
+				defer func() { _ = closer.Close() }()
+			}
+		}
+		if def.Instrumentation != nil {
+			closeInstrumentation, err = (instrumentation.OBI{}).StartLocal(ctx, *def.Instrumentation, datasourceConfig.Endpoint)
+			if err != nil {
+				writeLine(streams.Err, "error: instrumentation:", err)
+				return 1
+			}
 		}
 	} else {
-		client, closeExecutor, err := startRemoteExecutor(ctx, target, filepath.Dir(def.ConfigPath), datasourceConfig, streams.Err)
+		client, closeExecutor, err := startRemoteExecutor(ctx, target, filepath.Dir(def.ConfigPath), datasourceConfig, def.Instrumentation, streams.Err)
 		if err != nil {
 			writeLine(streams.Err, "error:", err)
 			return 1
@@ -510,6 +524,12 @@ func run(ctx context.Context, args []string, streams IO) int {
 	}
 	eng := engine.Engine{HTTP: httpExecutor, Triggers: triggers, TraceFactory: tracecontext.NewFactory(), FailFast: *failFast, Progress: progressFunc}
 	runResult := eng.Run(ctx, runtimeProject)
+	if closeInstrumentation != nil {
+		if err := closeInstrumentation(); err != nil {
+			writeLine(streams.Err, "error: instrumentation:", err)
+			return 1
+		}
+	}
 	if closeRemote != nil {
 		if err := closeRemote(); err != nil {
 			if ctx.Err() != nil {
@@ -593,17 +613,32 @@ func datasourceStore(def *model.DatasourceDefinition, values map[string]model.Se
 	return datasource.New(config)
 }
 
-func startRemoteExecutor(ctx context.Context, target model.TargetDefinition, configDir string, datasourceConfig *datasource.Config, stderr io.Writer) (*executorproto.Client, func() error, error) {
+func startRemoteExecutor(ctx context.Context, target model.TargetDefinition, configDir string, datasourceConfig *datasource.Config, instrumentationDefinition *model.InstrumentationDefinition, stderr io.Writer) (*executorproto.Client, func() error, error) {
 	requestReader, requestWriter := io.Pipe()
 	responseReader, responseWriter := io.Pipe()
 	done := make(chan error, 1)
+	otlpEndpoint := ""
+	remoteDatasource := datasourceConfig
+	if datasourceConfig != nil {
+		otlpEndpoint = datasourceConfig.Endpoint
+	}
+	if instrumentationDefinition != nil && datasourceConfig != nil {
+		copy := *datasourceConfig
+		u, parseErr := url.Parse(copy.Endpoint)
+		if parseErr != nil || u.Port() == "" {
+			return nil, nil, fmt.Errorf("instrumentation OTLP endpoint must include a port: %q", copy.Endpoint)
+		}
+		u.Host = net.JoinHostPort("0.0.0.0", u.Port())
+		copy.Endpoint = u.String()
+		remoteDatasource = &copy
+	}
 	go func() {
-		err := (targetruntime.Launcher{}).Run(ctx, target, configDir, requestReader, targetruntime.IO{Out: responseWriter, Err: stderr})
+		err := (targetruntime.Launcher{}).Run(ctx, target, configDir, otlpEndpoint, instrumentationDefinition, requestReader, targetruntime.IO{Out: responseWriter, Err: stderr})
 		_ = responseWriter.CloseWithError(err)
 		_ = requestReader.CloseWithError(err)
 		done <- err
 	}()
-	client := executorproto.NewClient(requestWriter, responseReader, datasourceConfig)
+	client := executorproto.NewClient(requestWriter, responseReader, remoteDatasource)
 	closeExecutor := func() error {
 		return closeRemoteExecutor(ctx, requestWriter, responseReader, done)
 	}

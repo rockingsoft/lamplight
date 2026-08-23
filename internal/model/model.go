@@ -73,6 +73,14 @@ type DatasourceDefinition struct {
 	PollingInterval   time.Duration
 }
 
+type InstrumentationDefinition struct {
+	Kind               string
+	Image              string
+	OpenPorts          []int
+	ContextPropagation string
+	Range              SourceRange
+}
+
 // SupportedDatasourceKinds is the public set of tracing backends inherited
 // from Tracetest. SaaS backends use Lamplight's local OTLP ingestion adapter;
 // the remaining backends are queried directly.
@@ -166,16 +174,17 @@ type TestDefinition struct {
 }
 
 type ProjectDefinition struct {
-	ConfigPath    string
-	BaseDir       string
-	Output        string
-	HTTPClient    HTTPClientConfig
-	HTTPProxy     hcl.Expression
-	Datasource    *DatasourceDefinition
-	Variables     map[string]VariableDefinition
-	Tests         map[string]TestDefinition
-	DefaultTarget string
-	Targets       map[string]TargetDefinition
+	ConfigPath      string
+	BaseDir         string
+	Output          string
+	HTTPClient      HTTPClientConfig
+	HTTPProxy       hcl.Expression
+	Datasource      *DatasourceDefinition
+	Instrumentation *InstrumentationDefinition
+	Variables       map[string]VariableDefinition
+	Tests           map[string]TestDefinition
+	DefaultTarget   string
+	Targets         map[string]TargetDefinition
 }
 
 type TargetDefinition struct {
