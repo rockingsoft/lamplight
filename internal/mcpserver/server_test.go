@@ -101,6 +101,10 @@ func TestServerListsReadsWritesAndRollsBack(t *testing.T) {
 	if !containsPair(runArgs, "--target", "compose") {
 		t.Fatalf("run did not forward target: %q", runArgs)
 	}
+	runResult = call(t, ctx, clientSession, "lamplight_run_tests", map[string]any{"tags": []string{"slow", "flaky"}, "exclude": true})
+	if runResult.IsError || !containsPair(runArgs, "--tag", "slow") || !containsPair(runArgs, "--tag", "flaky") || !containsValue(runArgs, "--exclude") {
+		t.Fatalf("run did not forward repeated excluded tags: result=%#v args=%q", runResult, runArgs)
+	}
 
 	configReadResult := call(t, ctx, clientSession, "lamplight_read_project_config", nil)
 	var configRead fileOutput
@@ -164,6 +168,15 @@ func TestServerListsReadsWritesAndRollsBack(t *testing.T) {
 	if string(after) != string(accepted) {
 		t.Fatal("invalid write was not rolled back")
 	}
+}
+
+func containsValue(values []string, wanted string) bool {
+	for _, value := range values {
+		if value == wanted {
+			return true
+		}
+	}
+	return false
 }
 
 func containsPair(values []string, first, second string) bool {

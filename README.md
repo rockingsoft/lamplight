@@ -115,12 +115,15 @@ test "healthcheck" {
 }
 ```
 
-Run all tests, one named test, or a tag:
+Run all tests, one named test, tests from a file, or tests containing any of
+several tags. Add `--exclude` to invert any explicit selector:
 
 ```sh
 lamplight run
 lamplight run healthcheck
 lamplight run --tag smoke
+lamplight run --tag slow --tag flaky --exclude
+lamplight run --file checkout/orders.wick --exclude
 lamplight run --fail-fast
 ```
 
