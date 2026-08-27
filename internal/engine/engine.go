@@ -7,7 +7,10 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"os"
+	"path/filepath"
 	"sort"
+	"strings"
 	"time"
 
 	"github.com/hashicorp/hcl/v2"
@@ -159,8 +162,11 @@ func (e *Engine) runStep(ctx context.Context, project *model.Project, step model
 			sr.Error = diagnostic("trigger_evaluation", evalErr.Error())
 			return finish(model.StatusError)
 		}
-		if trace != nil && isTraceIDTrigger(req.Kind) {
-			id, _ := req.Attributes["id"].(string)
+		if err := prepareTriggerRequest(&req, project.Definition); err != nil {
+			sr.Error = diagnostic("trigger_evaluation", err.Error())
+			return finish(model.StatusError)
+		}
+		if id, ok := triggerTraceID(req); trace != nil && ok {
 			if len(id) != 32 || !validHex(id) {
 				sr.Error = diagnostic("trigger_evaluation", fmt.Sprintf("%s.id must be a 32-character trace ID", req.Kind))
 				return finish(model.StatusError)
@@ -275,13 +281,60 @@ func triggerKind(step model.StepDefinition) model.TriggerKind {
 
 func validHex(value string) bool { _, err := hex.DecodeString(value); return err == nil }
 
-func isTraceIDTrigger(kind model.TriggerKind) bool {
-	switch kind {
+func triggerTraceID(request model.TriggerRequest) (string, bool) {
+	switch request.Kind {
 	case model.TriggerTraceID, model.TriggerCypress, model.TriggerPlaywright, model.TriggerArtillery, model.TriggerK6:
-		return true
+		id, ok := request.Attributes["id"].(string)
+		return id, ok
 	default:
-		return false
+		return "", false
 	}
+}
+
+func prepareTriggerRequest(request *model.TriggerRequest, definition *model.ProjectDefinition) error {
+	if request.Kind != model.TriggerK6 {
+		return nil
+	}
+	script, ok := request.Attributes["script"].(string)
+	if !ok {
+		return nil // Legacy k6 { id = ... } form.
+	}
+	if strings.TrimSpace(script) == "" {
+		return fmt.Errorf("k6.script must not be empty")
+	}
+	base := "."
+	if definition != nil && definition.BaseDir != "" {
+		base = definition.BaseDir
+	}
+	base, err := filepath.Abs(base)
+	if err != nil {
+		return fmt.Errorf("resolve project base directory: %w", err)
+	}
+	base, err = filepath.EvalSymlinks(base)
+	if err != nil {
+		return fmt.Errorf("resolve project base directory: %w", err)
+	}
+	path := script
+	if !filepath.IsAbs(path) {
+		path = filepath.Join(base, path)
+	}
+	path, err = filepath.EvalSymlinks(path)
+	if err != nil {
+		return fmt.Errorf("resolve k6 script %q: %w", script, err)
+	}
+	relative, err := filepath.Rel(base, path)
+	if err != nil || relative == ".." || strings.HasPrefix(relative, ".."+string(filepath.Separator)) {
+		return fmt.Errorf("k6 script %q escapes project.base_dir", script)
+	}
+	info, err := os.Stat(path)
+	if err != nil {
+		return fmt.Errorf("inspect k6 script %q: %w", script, err)
+	}
+	if !info.Mode().IsRegular() {
+		return fmt.Errorf("k6 script %q is not a regular file", script)
+	}
+	request.Attributes["script"] = path
+	return nil
 }
 
 func evaluateTrigger(def model.TriggerDefinition, variables map[string]model.SensitiveValue, steps cty.Value) (model.TriggerRequest, error) {

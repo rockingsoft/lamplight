@@ -2,6 +2,11 @@ package trigger
 
 import (
 	"context"
+	"fmt"
+	"os"
+	"os/exec"
+	"path/filepath"
+	"strings"
 	"testing"
 
 	"lamplight/internal/model"
@@ -35,5 +40,116 @@ func TestTraceIDBasedTriggers(t *testing.T) {
 		if err != nil || result.Body == "" {
 			t.Fatalf("kind=%s result=%+v err=%v", kind, result, err)
 		}
+	}
+}
+
+func TestExecuteK6RunsScriptAndPropagatesTraceContext(t *testing.T) {
+	directory := t.TempDir()
+	script := filepath.Join(directory, "load.js")
+	if err := os.WriteFile(script, []byte("export default function () {}\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	executor := New(nil)
+	executor.command = k6HelperCommand
+	executor.lookPath = func(string) (string, error) { return "k6", nil }
+	trace := &model.TestTraceContext{TraceID: "0123456789abcdef0123456789abcdef", SpanID: "0123456789abcdef", TraceState: "lamplight=true"}
+	response, err := executor.Execute(context.Background(), model.TriggerRequest{Kind: model.TriggerK6, Attributes: map[string]any{
+		"script": script,
+		"env":    map[string]any{"BASE_URL": "https://example.test", "LAMPLIGHT_TRACEPARENT": "untrusted"},
+		"arguments": map[string]any{
+			"vus":        float64(1),
+			"iterations": float64(1),
+			"quiet":      false,
+			"tag":        []any{"suite=smoke", "team=checkout"},
+		},
+	}}, model.DefaultHTTPClientConfig(), trace)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if response.StatusCode != 0 || !strings.Contains(response.Body, "BASE_URL=https://example.test") || !strings.Contains(response.Body, "TRACEPARENT="+trace.TraceParent()) || !strings.Contains(response.Body, "ARGUMENTS=--iterations=1,--tag=suite=smoke,--tag=team=checkout,--vus=1") {
+		t.Fatalf("response=%#v", response)
+	}
+	result, ok := response.JSON.(map[string]any)
+	if !ok || result["summary"] == nil || result["exit_code"] != 0 {
+		t.Fatalf("json=%#v", response.JSON)
+	}
+}
+
+func TestK6ArgumentsRequiresMapAndProtectsSummary(t *testing.T) {
+	if _, err := k6Arguments([]any{"--vus", "1"}); err == nil || !strings.Contains(err.Error(), "must be a map") {
+		t.Fatalf("err=%v", err)
+	}
+	if _, err := k6Arguments(map[string]any{"summary_export": "other.json"}); err == nil || !strings.Contains(err.Error(), "cannot override") {
+		t.Fatalf("err=%v", err)
+	}
+}
+
+func TestExecuteK6ReportsThresholdFailure(t *testing.T) {
+	directory := t.TempDir()
+	script := filepath.Join(directory, "load.js")
+	if err := os.WriteFile(script, []byte("export default function () {}\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	executor := New(nil)
+	executor.command = k6HelperCommand
+	executor.lookPath = func(string) (string, error) { return "k6", nil }
+	response, err := executor.Execute(context.Background(), model.TriggerRequest{Kind: model.TriggerK6, Attributes: map[string]any{
+		"script": script,
+		"env":    map[string]any{"K6_HELPER_EXIT_CODE": "99"},
+	}}, model.DefaultHTTPClientConfig(), nil)
+	if err == nil || !strings.Contains(err.Error(), "k6 exited with code 99") || response.StatusCode != 99 {
+		t.Fatalf("response=%#v err=%v", response, err)
+	}
+}
+
+func TestExecuteK6RequiresBinaryInPath(t *testing.T) {
+	executor := New(nil)
+	executor.lookPath = func(string) (string, error) { return "", exec.ErrNotFound }
+	_, err := executor.Execute(context.Background(), model.TriggerRequest{Kind: model.TriggerK6, Attributes: map[string]any{"script": "/tmp/load.js"}}, model.DefaultHTTPClientConfig(), nil)
+	if err == nil || !strings.Contains(err.Error(), "k6 executable not found in PATH") {
+		t.Fatalf("err=%v", err)
+	}
+}
+
+func k6HelperCommand(ctx context.Context, _ string, args ...string) *exec.Cmd {
+	commandArgs := []string{"-test.run=TestK6HelperProcess", "--"}
+	commandArgs = append(commandArgs, args...)
+	return exec.CommandContext(ctx, os.Args[0], commandArgs...)
+}
+
+func TestK6HelperProcess(t *testing.T) {
+	separator := -1
+	for index, argument := range os.Args {
+		if argument == "--" {
+			separator = index
+			break
+		}
+	}
+	if separator < 0 {
+		return
+	}
+	args := os.Args[separator+1:]
+	summaryPath := ""
+	for index, argument := range args {
+		if argument == "--summary-export" && index+1 < len(args) {
+			summaryPath = args[index+1]
+		}
+	}
+	if summaryPath == "" {
+		fmt.Fprintln(os.Stderr, "missing summary path")
+		os.Exit(2)
+	}
+	if err := os.WriteFile(summaryPath, []byte(`{"metrics":{"http_req_failed":{"type":"rate"}}}`), 0o600); err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		os.Exit(2)
+	}
+	arguments := []string{}
+	if len(args) > 4 {
+		arguments = args[3 : len(args)-1]
+	}
+	fmt.Printf("BASE_URL=%s\nTRACEPARENT=%s\nARGUMENTS=%s\n", os.Getenv("BASE_URL"), os.Getenv("LAMPLIGHT_TRACEPARENT"), strings.Join(arguments, ","))
+	if os.Getenv("K6_HELPER_EXIT_CODE") == "99" {
+		fmt.Fprintln(os.Stderr, "thresholds failed")
+		os.Exit(99)
 	}
 }

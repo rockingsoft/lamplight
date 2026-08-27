@@ -57,7 +57,7 @@ When diagnosing telemetry or a failed test:
 
 If no backend access is available, report what the Wick says should exist and what Lamplight observed. Do not claim to have inspected raw backend telemetry.
 
-If Lamplight is exposed through MCP, prefer its read, edit, format, lint, validate, and selected-run operations over hand-editing when those operations are available. Do not start services, alter instrumentation, or execute a live test unless the user requested or authorized those effects.
+If Lamplight is exposed through MCP, discover its current capabilities first. Prefer its scoped reference, scaffold, prospective-content validation, read, edit, format, lint, trace-observation, and selected-run operations over hand-editing when those operations are available. Treat trace observation as a live backend read and test execution as an external effect; do not start services, alter instrumentation, observe a live backend, or execute a live test unless the user requested or authorized those effects.
 
 ## Required quality bar
 

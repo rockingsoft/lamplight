@@ -1,0 +1,22 @@
+test "k6 smoke" {
+  tags = ["smoke", "k6"]
+
+  step "load" {
+    k6 {
+      script = "smoke.js"
+      env = {
+        LAMPLIGHT_K6_SMOKE = "ok"
+      }
+      arguments = {
+        vus        = 1
+        iterations = 1
+      }
+    }
+
+    check "k6 completed" {
+      response = {
+        "exit code is zero" = response.json.exit_code == 0
+      }
+    }
+  }
+}

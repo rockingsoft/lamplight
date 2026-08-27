@@ -175,10 +175,13 @@ codex mcp list
 claude mcp list
 ```
 
-The MCP server lets an agent list, read, create, edit, format, lint, validate,
-and run Lamplight tests. Writes use content hashes, validation, atomic rename,
-and rollback to avoid silently overwriting concurrent or invalid changes. See
-the [MCP server guide](docs/mcp.md) for its tools, project scoping, targets, and
+The MCP server lets an agent discover the exact DSL and supported triggers,
+scaffold and validate tests without writing, inspect redacted trace evidence,
+list and read definitions and targets, safely edit `.wick` files and the active
+`.lamplight` configuration, format and lint projects, and execute selected
+tests. Existing writes use content hashes, validation, atomic rename, and
+rollback to avoid silently overwriting concurrent or invalid changes. See the
+[MCP server guide](docs/mcp.md) for its tools, project scoping, targets, and
 secret-handling guidance.
 
 Once connected, try prompts such as:
@@ -285,10 +288,12 @@ The application under test must honor Lamplight's incoming `traceparent` and
 export downstream spans with the same trace ID. A tracing backend cannot
 correlate a workflow if the application breaks context propagation.
 
-Lamplight supports direct trace-by-ID integrations and local OTLP ingestion
+Lamplight supports ordered HTTP and backend triggers, including executable
+local k6 scripts, direct trace-by-ID integrations, and local OTLP ingestion
 adapters, as well as local, Docker Compose, and Kubernetes execution targets.
-See the [DSL and CLI reference](docs/reference.md) for the current trigger,
-datasource, target, expression, and configuration contracts.
+Executable k6 triggers require `k6` in `PATH`. See the
+[DSL and CLI reference](docs/reference.md) for the current trigger, datasource,
+target, expression, and configuration contracts.
 
 ## The agent feedback loop
 

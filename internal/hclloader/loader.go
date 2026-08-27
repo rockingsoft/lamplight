@@ -451,7 +451,11 @@ func parseStep(block *hcl.Block) (model.StepDefinition, []model.Diagnostic) {
 	if !hclsyntax.ValidIdentifier(step.Name) {
 		diags = append(diags, diagnostic.Error(diagnostic.CodeSchema, fmt.Sprintf("step name %q must be a valid HCL identifier", step.Name), block.DefRange, "use a valid HCL identifier"))
 	}
-	content, hclDiags := block.Body.Content(&hcl.BodySchema{Attributes: []hcl.AttributeSchema{{Name: "outputs"}}, Blocks: []hcl.BlockHeaderSchema{{Type: "http_request"}, {Type: "grpc_request"}, {Type: "graphql_request"}, {Type: "kafka_request"}, {Type: "traceid"}, {Type: "cypress"}, {Type: "playwright"}, {Type: "artillery"}, {Type: "k6"}, {Type: "playwright_engine"}, {Type: "check", LabelNames: []string{"name"}}}})
+	triggerBlocks := []hcl.BlockHeaderSchema{{Type: "check", LabelNames: []string{"name"}}}
+	for _, capability := range TriggerCapabilities() {
+		triggerBlocks = append(triggerBlocks, hcl.BlockHeaderSchema{Type: capability.Block})
+	}
+	content, hclDiags := block.Body.Content(&hcl.BodySchema{Attributes: []hcl.AttributeSchema{{Name: "outputs"}}, Blocks: triggerBlocks})
 	diags = append(diags, diagnostic.FromHCL(hclDiags, diagnostic.CodeSchema)...)
 	var triggers []*hcl.Block
 	for _, child := range content.Blocks {
@@ -486,45 +490,38 @@ func parseStep(block *hcl.Block) (model.StepDefinition, []model.Diagnostic) {
 }
 
 func parseTrigger(block *hcl.Block) (model.TriggerDefinition, []model.Diagnostic) {
-	kinds := map[string]model.TriggerKind{
-		"grpc_request": model.TriggerGRPC, "graphql_request": model.TriggerGraphQL,
-		"kafka_request": model.TriggerKafka, "traceid": model.TriggerTraceID,
-		"cypress": model.TriggerCypress, "playwright": model.TriggerPlaywright,
-		"artillery": model.TriggerArtillery, "k6": model.TriggerK6,
-		"playwright_engine": model.TriggerPlaywrightEngine,
-	}
-	required := map[string][]string{
-		"grpc_request":    {"protobuf", "address", "method", "request"},
-		"graphql_request": {"url", "query"},
-		"kafka_request":   {"broker_urls", "topic", "message_value"},
-		"traceid":         {"id"}, "cypress": {"id"}, "playwright": {"id"},
-		"artillery": {"id"}, "k6": {"id"},
-		"playwright_engine": {"target", "script"},
-	}
-	optional := map[string][]string{
-		"grpc_request":      {"metadata"},
-		"graphql_request":   {"variables", "operation_name", "headers"},
-		"kafka_request":     {"message_key", "headers", "username", "password", "tls"},
-		"playwright_engine": {"method"},
+	capability, exists := triggerCapability(block.Type)
+	if !exists || block.Type == "http_request" {
+		return model.TriggerDefinition{}, []model.Diagnostic{diagnostic.Error(diagnostic.CodeSchema, fmt.Sprintf("unsupported trigger block %q", block.Type), block.DefRange, "use a trigger returned by lamplight_get_capabilities")}
 	}
 	schema := &hcl.BodySchema{}
-	for _, name := range required[block.Type] {
-		schema.Attributes = append(schema.Attributes, hcl.AttributeSchema{Name: name, Required: true})
-	}
-	for _, name := range optional[block.Type] {
-		schema.Attributes = append(schema.Attributes, hcl.AttributeSchema{Name: name})
+	for _, attribute := range capability.Attributes {
+		schema.Attributes = append(schema.Attributes, hcl.AttributeSchema{Name: attribute.Name, Required: attribute.Required})
 	}
 	content, hclDiags := block.Body.Content(schema)
-	definition := model.TriggerDefinition{Kind: kinds[block.Type], Attributes: map[string]hcl.Expression{}}
+	definition := model.TriggerDefinition{Kind: capability.Kind, Attributes: map[string]hcl.Expression{}}
 	for name, attribute := range content.Attributes {
 		definition.Attributes[name] = attribute.Expr
 	}
-	return definition, diagnostic.FromHCL(hclDiags, diagnostic.CodeSchema)
+	diags := diagnostic.FromHCL(hclDiags, diagnostic.CodeSchema)
+	if block.Type == "k6" {
+		_, hasID := content.Attributes["id"]
+		_, hasScript := content.Attributes["script"]
+		if hasID == hasScript {
+			diags = append(diags, diagnostic.Error(diagnostic.CodeSchema, "k6 requires exactly one of id or script", block.DefRange, "use script to execute k6 or id to attach an existing trace"))
+		}
+	}
+	return definition, diags
 }
 
 func parseHTTP(block *hcl.Block) (model.HTTPRequestDefinition, []model.Diagnostic) {
 	request := model.HTTPRequestDefinition{Headers: map[string]hcl.Expression{}}
-	content, hclDiags := block.Body.Content(&hcl.BodySchema{Attributes: []hcl.AttributeSchema{{Name: "method", Required: true}, {Name: "url", Required: true}, {Name: "headers"}, {Name: "body"}}})
+	capability, _ := triggerCapability("http_request")
+	schema := &hcl.BodySchema{}
+	for _, attribute := range capability.Attributes {
+		schema.Attributes = append(schema.Attributes, hcl.AttributeSchema{Name: attribute.Name, Required: attribute.Required})
+	}
+	content, hclDiags := block.Body.Content(schema)
 	diags := diagnostic.FromHCL(hclDiags, diagnostic.CodeSchema)
 	if attr, ok := content.Attributes["method"]; ok {
 		request.Method = attr.Expr
