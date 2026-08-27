@@ -25,6 +25,7 @@ Unless a section says otherwise:
 5. [Tests](#5-tests)
 6. [Steps](#6-steps)
 7. [HTTP requests](#7-http-requests)
+   - [k6 scripts](#k6-scripts)
 8. [Step outputs](#8-step-outputs)
 9. [Checks](#9-checks)
 10. [Expression contexts](#10-expression-contexts)
@@ -462,6 +463,68 @@ Supported response forms:
 
 For JSON content types, the body must decode successfully. Binary media types
 and non-UTF-8 bodies are rejected.
+
+### k6 scripts
+
+The executable k6 trigger runs an existing JavaScript file with the `k6`
+binary available in `PATH`:
+
+```hcl
+step "checkout_load" {
+  k6 {
+    script = "k6/checkout.js"
+    env = {
+      BASE_URL = var.BASE_URL
+    }
+    arguments = {
+      vus        = 1
+      iterations = 1
+      tag        = ["suite=smoke", "team=checkout"]
+    }
+  }
+
+  check "k6 completed" {
+    response = {
+      "exit code is zero" = response.json.exit_code == 0
+    }
+  }
+}
+```
+
+| Property | Required | Type | Expression context | Description |
+| --- | --- | --- | --- | --- |
+| `script` | yes | string expression | `var`, `steps` | JavaScript file below `project.base_dir`; relative paths start there. |
+| `env` | no | map expression | `var`, `steps` | Environment values exposed to the script through k6 `__ENV`. |
+| `arguments` | no | map | `var`, `steps` | k6 flag names and their string, number, boolean, or repeated-list values. |
+
+Argument keys are sorted, underscores become hyphens, and Lamplight prefixes
+them with `--`. String and number values become `--name=value`, `true` becomes
+`--name`, `false` is omitted, and lists repeat the flag once per value. Keys
+must not contain leading dashes. `summary_export` is reserved because Lamplight
+manages that file.
+
+The script must resolve to a regular file and cannot escape `project.base_dir`,
+including through a symbolic link. Executable k6 triggers currently support
+only the implicit `local` target. Compose and Kubernetes target execution is
+rejected before starting a remote executor. Before creating temporary files or
+starting the trigger, Lamplight verifies that a `k6` executable exists in
+`PATH` and reports an installation-oriented diagnostic when it is absent.
+
+When a datasource is configured, Lamplight supplies authoritative
+`LAMPLIGHT_TRACEPARENT` and `LAMPLIGHT_TRACESTATE` environment variables. k6
+does not apply them automatically: the script must copy them into the relevant
+request headers. This keeps the k6 transaction correlated with the trace that
+the containing step polls.
+
+Lamplight runs k6 with a temporary `--summary-export` file. A successful
+response has status code `0` and exposes `exit_code`, `stdout`, `stderr`, and
+the decoded `summary` below `response.json`. A nonzero k6 exit, including a
+failed threshold, is a trigger execution error. Output and summary sizes are
+bounded by `http_client.max_response_body_bytes`.
+
+The legacy `k6 { id = "<trace-id>" }` form remains accepted for compatibility
+and attaches an already generated trace. New tests should use `traceid` for
+that behavior. A k6 block must contain exactly one of `script` or `id`.
 
 ## 8. Step outputs
 

@@ -312,6 +312,9 @@ func runMCP(ctx context.Context, args []string, streams IO) int {
 			exitCode := Main(runCtx, runArgs, IO{Out: &stdout, Err: &stderr})
 			return exitCode, stdout.Bytes(), stderr.Bytes()
 		},
+		ObserveTrace: func(observeCtx context.Context, request mcpserver.ObserveTraceRequest) (mcpserver.TraceEvidence, error) {
+			return observeTraceForMCP(observeCtx, config.Options{ConfigPath: common.config, WorkingDir: common.working}, request)
+		},
 	})
 	if err := server.Run(ctx, &mcp.StdioTransport{}); err != nil {
 		writeLine(streams.Err, "error: mcp:", err)
@@ -428,6 +431,10 @@ func run(ctx context.Context, args []string, streams IO) int {
 	tests, err := selection.Select(def, selection.Selector{Name: name, Tag: *tag})
 	if err != nil {
 		writeLine(streams.Err, "error:", err)
+		return 1
+	}
+	if target.Runtime != "local" && containsExecutableK6(tests) {
+		writeLine(streams.Err, "error: k6 script triggers currently require the local target")
 		return 1
 	}
 	debuglog.Debug(ctx, "selected tests", "count", len(tests), "name", name, "tag", *tag)
@@ -558,6 +565,19 @@ func run(ctx context.Context, args []string, streams IO) int {
 	}
 	_, _ = streams.Out.Write(encoded)
 	return result.ExitCode(runResult)
+}
+
+func containsExecutableK6(tests []model.TestDefinition) bool {
+	for _, test := range tests {
+		for _, step := range test.Steps {
+			if step.Trigger.Kind == model.TriggerK6 {
+				if _, exists := step.Trigger.Attributes["script"]; exists {
+					return true
+				}
+			}
+		}
+	}
+	return false
 }
 
 func normalizeRunArgs(args []string) []string {

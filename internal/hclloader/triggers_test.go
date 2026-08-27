@@ -22,6 +22,7 @@ func TestParseAllNonHTTPTriggers(t *testing.T) {
 		{"playwright", `id = "0123456789abcdef0123456789abcdef"`, model.TriggerPlaywright},
 		{"artillery", `id = "0123456789abcdef0123456789abcdef"`, model.TriggerArtillery},
 		{"k6", `id = "0123456789abcdef0123456789abcdef"`, model.TriggerK6},
+		{"k6", "script = \"load.js\"\nenv = { BASE_URL = \"https://example.test\" }\narguments = { vus = 1 }", model.TriggerK6},
 		{"playwright_engine", "target = \"https://example.test\"\nscript = \"async () => {}\"", model.TriggerPlaywrightEngine},
 	}
 	for _, tc := range cases {
@@ -40,5 +41,20 @@ func TestParseAllNonHTTPTriggers(t *testing.T) {
 				t.Fatalf("kind=%q want=%q", step.Trigger.Kind, tc.kind)
 			}
 		})
+	}
+}
+
+func TestK6RequiresExactlyOneSource(t *testing.T) {
+	for _, body := range []string{"", "id = \"0123456789abcdef0123456789abcdef\"\nscript = \"load.js\""} {
+		source := fmt.Sprintf("step \"example\" {\nk6 {\n%s\n}\n}", body)
+		file, diags := hclparse.NewParser().ParseHCL([]byte(source), "trigger.wick")
+		if diags.HasErrors() {
+			t.Fatal(diags.Error())
+		}
+		parsed := file.Body.(*hclsyntax.Body)
+		_, diagnostics := parseStep(parsed.Blocks[0].AsHCLBlock())
+		if len(diagnostics) == 0 || diagnostics[0].Message != "k6 requires exactly one of id or script" {
+			t.Fatalf("diagnostics=%#v", diagnostics)
+		}
 	}
 }

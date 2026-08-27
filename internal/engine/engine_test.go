@@ -2,6 +2,9 @@ package engine
 
 import (
 	"context"
+	"os"
+	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/hashicorp/hcl/v2"
@@ -13,6 +16,41 @@ import (
 type fakeHTTP struct {
 	response model.Response
 	err      error
+}
+
+func TestPrepareK6ScriptResolvesInsideProject(t *testing.T) {
+	directory := t.TempDir()
+	script := filepath.Join(directory, "load.js")
+	if err := os.WriteFile(script, []byte("test"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	request := model.TriggerRequest{Kind: model.TriggerK6, Attributes: map[string]any{"script": "load.js"}}
+	if err := prepareTriggerRequest(&request, &model.ProjectDefinition{BaseDir: directory}); err != nil {
+		t.Fatal(err)
+	}
+	resolved, err := filepath.EvalSymlinks(script)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if request.Attributes["script"] != resolved {
+		t.Fatalf("script=%q", request.Attributes["script"])
+	}
+}
+
+func TestPrepareK6ScriptRejectsEscape(t *testing.T) {
+	parent := t.TempDir()
+	base := filepath.Join(parent, "tests")
+	if err := os.Mkdir(base, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(parent, "outside.js"), []byte("test"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	request := model.TriggerRequest{Kind: model.TriggerK6, Attributes: map[string]any{"script": "../outside.js"}}
+	err := prepareTriggerRequest(&request, &model.ProjectDefinition{BaseDir: base})
+	if err == nil || !strings.Contains(err.Error(), "escapes project.base_dir") {
+		t.Fatalf("err=%v", err)
+	}
 }
 
 func (f fakeHTTP) Execute(context.Context, model.HTTPRequest, model.HTTPClientConfig, *model.TestTraceContext) (model.Response, error) {

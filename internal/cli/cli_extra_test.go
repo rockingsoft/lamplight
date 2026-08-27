@@ -473,3 +473,11 @@ func TestRunProgressFitsSpinnerToOneTerminalLine(t *testing.T) {
 		t.Fatalf("fitted text=%q len=%d", got, len([]rune(got)))
 	}
 }
+
+func TestContainsExecutableK6DistinguishesLegacyTraceAttachment(t *testing.T) {
+	executable := []model.TestDefinition{{Steps: []model.StepDefinition{{Trigger: model.TriggerDefinition{Kind: model.TriggerK6, Attributes: map[string]hcl.Expression{"script": cliExpr(t, `"load.js"`)}}}}}}
+	legacy := []model.TestDefinition{{Steps: []model.StepDefinition{{Trigger: model.TriggerDefinition{Kind: model.TriggerK6, Attributes: map[string]hcl.Expression{"id": cliExpr(t, `"0123456789abcdef0123456789abcdef"`)}}}}}}
+	if !containsExecutableK6(executable) || containsExecutableK6(legacy) {
+		t.Fatal("k6 execution detection did not distinguish script and id forms")
+	}
+}

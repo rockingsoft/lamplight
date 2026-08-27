@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
+	"lamplight/internal/model"
 )
 
 func TestServerListsReadsWritesAndRollsBack(t *testing.T) {
@@ -31,6 +32,8 @@ func TestServerListsReadsWritesAndRollsBack(t *testing.T) {
 	server := New(Options{WorkingDir: root, RunCLI: func(_ context.Context, args []string) (int, []byte, []byte) {
 		runArgs = append([]string(nil), args...)
 		return 0, []byte(`{"schema_version":"1"}`), nil
+	}, ObserveTrace: func(_ context.Context, request ObserveTraceRequest) (TraceEvidence, error) {
+		return TraceEvidence{TraceID: request.TraceID, Found: true, Valid: true, SpanCount: 1, Spans: []model.Span{{Name: "GET /health"}}}, nil
 	}})
 	serverTransport, clientTransport := mcp.NewInMemoryTransports()
 	serverSession, err := server.Connect(ctx, serverTransport, nil)
@@ -49,8 +52,38 @@ func TestServerListsReadsWritesAndRollsBack(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(tools.Tools) != 10 {
-		t.Fatalf("got %d tools, want 10", len(tools.Tools))
+	if len(tools.Tools) != 15 {
+		t.Fatalf("got %d tools, want 15", len(tools.Tools))
+	}
+	capabilitiesResult := call(t, ctx, clientSession, "lamplight_get_capabilities", nil)
+	var capabilities capabilitiesOutput
+	decodeStructured(t, capabilitiesResult, &capabilities)
+	if len(capabilities.Triggers) != 10 || len(capabilities.Functions) == 0 {
+		t.Fatalf("capabilities=%#v", capabilities)
+	}
+	for _, trigger := range capabilities.Triggers {
+		scaffoldResult := call(t, ctx, clientSession, "lamplight_scaffold_test", map[string]any{"trigger": trigger.Block, "test_name": "scaffold_" + trigger.Block})
+		if scaffoldResult.IsError {
+			t.Fatalf("scaffold %s failed: %#v", trigger.Block, scaffoldResult.Content)
+		}
+		var scaffold scaffoldOutput
+		decodeStructured(t, scaffoldResult, &scaffold)
+		validateResult := call(t, ctx, clientSession, "lamplight_validate_test_content", map[string]any{"path": "candidate-" + trigger.Block + ".wick", "content": scaffold.Content})
+		if validateResult.IsError {
+			t.Fatalf("validate %s failed: %#v", trigger.Block, validateResult.Content)
+		}
+	}
+	referenceResult := call(t, ctx, clientSession, "lamplight_get_dsl_reference", map[string]any{"topic": "checks"})
+	var reference referenceOutput
+	decodeStructured(t, referenceResult, &reference)
+	if reference.Topic != "checks" || reference.Reference == "" {
+		t.Fatalf("reference=%#v", reference)
+	}
+	traceResult := call(t, ctx, clientSession, "lamplight_observe_trace", map[string]any{"trace_id": "0123456789abcdef0123456789abcdef"})
+	var evidence TraceEvidence
+	decodeStructured(t, traceResult, &evidence)
+	if !evidence.Found || evidence.SpanCount != 1 || len(evidence.Spans) != 1 {
+		t.Fatalf("evidence=%#v", evidence)
 	}
 	listResult := call(t, ctx, clientSession, "lamplight_list_tests", nil)
 	var listed listOutput
