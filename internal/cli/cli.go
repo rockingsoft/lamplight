@@ -397,10 +397,24 @@ func (v *varsFlag) Set(raw string) error {
 	return nil
 }
 
+type stringsFlag []string
+
+func (v *stringsFlag) String() string { return strings.Join(*v, ",") }
+func (v *stringsFlag) Set(value string) error {
+	if value == "" {
+		return fmt.Errorf("selector value cannot be empty")
+	}
+	*v = append(*v, value)
+	return nil
+}
+
 func run(ctx context.Context, args []string, streams IO) int {
 	fs, c := commonFlags("run", streams.Err)
 	vars := varsFlag{}
-	tag := fs.String("tag", "", "select tag")
+	var tags, files stringsFlag
+	fs.Var(&tags, "tag", "select tag (repeatable)")
+	fs.Var(&files, "file", "select definition file relative to project.base_dir (repeatable)")
+	exclude := fs.Bool("exclude", false, "exclude tests matching the selector")
 	output := fs.String("output", "", "output format")
 	keep := fs.Bool("keep-artifacts", false, "keep successful artifacts")
 	failFast := fs.Bool("fail-fast", false, "stop after the first failed or errored test")
@@ -428,7 +442,7 @@ func run(ctx context.Context, args []string, streams IO) int {
 		writeLine(streams.Err, "error: target:", fmt.Sprintf("target %q is not declared", firstNonEmptyString(*targetName, def.DefaultTarget)))
 		return 1
 	}
-	tests, err := selection.Select(def, selection.Selector{Name: name, Tag: *tag})
+	tests, err := selection.Select(def, selection.Selector{Name: name, Tags: tags, Files: files, Exclude: *exclude})
 	if err != nil {
 		writeLine(streams.Err, "error:", err)
 		return 1
@@ -437,7 +451,7 @@ func run(ctx context.Context, args []string, streams IO) int {
 		writeLine(streams.Err, "error: k6 script triggers currently require the local target")
 		return 1
 	}
-	debuglog.Debug(ctx, "selected tests", "count", len(tests), "name", name, "tag", *tag)
+	debuglog.Debug(ctx, "selected tests", "count", len(tests), "name", name, "tags", strings.Join(tags, ","), "files", strings.Join(files, ","), "exclude", *exclude)
 	expressions := collectExpressions(def, tests)
 	targetValues, targetDiags := evaluateTargetVariables(target, def.Variables)
 	if printDiagnostics(streams.Err, targetDiags) {
@@ -583,7 +597,7 @@ func containsExecutableK6(tests []model.TestDefinition) bool {
 func normalizeRunArgs(args []string) []string {
 	flags := make([]string, 0, len(args))
 	positionals := make([]string, 0, 1)
-	valueFlags := map[string]bool{"--tag": true, "--output": true, "--artifacts-dir": true, "--var": true, "--target": true, "--config": true, "-c": true, "--working-dir": true, "-w": true}
+	valueFlags := map[string]bool{"--tag": true, "--file": true, "--output": true, "--artifacts-dir": true, "--var": true, "--target": true, "--config": true, "-c": true, "--working-dir": true, "-w": true}
 	for index := 0; index < len(args); index++ {
 		argument := args[index]
 		if strings.HasPrefix(argument, "-") {
@@ -884,7 +898,7 @@ Options:
   -w, --working-dir DIR  Working directory
   -h, --help             Show this help
 `,
-		"run": `Run all tests, one named test, or tests matching a tag.
+		"run": `Run all tests, one named test, one or more files, or tests matching tags.
 
 Usage:
   lamplight run [options] [TEST_NAME]
@@ -893,7 +907,9 @@ Usage:
 Options:
   -c, --config FILE       Project config path
   -w, --working-dir DIR   Working directory
-      --tag TAG           Run tests containing TAG
+      --tag TAG           Run tests containing TAG (repeatable; matches any)
+      --file FILE         Run tests from FILE relative to project.base_dir (repeatable)
+      --exclude           Exclude tests matching the name, files, or tags
       --var NAME=VALUE    Override a variable (repeatable)
       --target NAME       Use a named execution target (default: project default or local)
       --output FORMAT     Output format: pretty, text, or json

@@ -50,7 +50,7 @@ func New(options Options) *mcp.Server {
 	mcp.AddTool(server, &mcp.Tool{Name: "lamplight_write_project_config", Description: "Replace the active .lamplight configuration. Requires its current SHA-256, formats the HCL, validates the complete project, and rolls back invalid changes."}, svc.writeProjectConfig)
 	mcp.AddTool(server, &mcp.Tool{Name: "lamplight_format_project_config", Description: "Format the active .lamplight configuration using the canonical HCL formatter. Requires its current SHA-256."}, svc.formatProjectConfig)
 	mcp.AddTool(server, &mcp.Tool{Name: "lamplight_lint_project", Description: "Validate the complete project and report .wick files that are not canonically formatted. Does not execute tests or modify files."}, svc.lint)
-	mcp.AddTool(server, &mcp.Tool{Name: "lamplight_run_tests", Description: "Run all tests, one named test, or one tag and return the structured Lamplight JSON result."}, svc.run)
+	mcp.AddTool(server, &mcp.Tool{Name: "lamplight_run_tests", Description: "Run all tests or include/exclude tests selected by exact name, definition files, or tags and return the structured Lamplight JSON result."}, svc.run)
 	mcp.AddTool(server, &mcp.Tool{Name: "lamplight_get_capabilities", Description: "Return the authoritative DSL inventory, including every supported trigger, attributes, propagation behavior, checks, functions, targets, and datasources."}, svc.capabilities)
 	mcp.AddTool(server, &mcp.Tool{Name: "lamplight_get_dsl_reference", Description: "Return concise authoring guidance for one DSL topic without reading or changing project files."}, svc.reference)
 	mcp.AddTool(server, &mcp.Tool{Name: "lamplight_scaffold_test", Description: "Generate a formatted, non-writing .wick scaffold for any trigger returned by lamplight_get_capabilities."}, svc.scaffold)
@@ -348,7 +348,10 @@ func (s *service) lint(_ context.Context, _ *mcp.CallToolRequest, _ emptyInput) 
 
 type runInput struct {
 	Test      string            `json:"test,omitempty" jsonschema:"one exact test name; omit to run all tests"`
-	Tag       string            `json:"tag,omitempty" jsonschema:"select tests by tag; mutually exclusive with test"`
+	Tag       string            `json:"tag,omitempty" jsonschema:"deprecated single tag selector; mutually exclusive with test and files"`
+	Tags      []string          `json:"tags,omitempty" jsonschema:"select tests containing any tag; mutually exclusive with test and files"`
+	Files     []string          `json:"files,omitempty" jsonschema:"select definition files relative to project.base_dir; mutually exclusive with test and tags"`
+	Exclude   bool              `json:"exclude,omitempty" jsonschema:"exclude tests matching the supplied test, files, or tags selector"`
 	Target    string            `json:"target,omitempty" jsonschema:"named project target; omit to use project.default_target or the implicit local target"`
 	Variables map[string]string `json:"variables,omitempty" jsonschema:"runtime variable values; prefer MCP process environment for secrets"`
 }
@@ -362,8 +365,25 @@ type runOutput struct {
 func (s *service) run(ctx context.Context, _ *mcp.CallToolRequest, in runInput) (*mcp.CallToolResult, runOutput, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if in.Test != "" && in.Tag != "" {
-		return toolError("test and tag are mutually exclusive", runOutput{}), runOutput{}, nil
+	tags := append([]string(nil), in.Tags...)
+	if in.Tag != "" {
+		tags = append(tags, in.Tag)
+	}
+	selectorKinds := 0
+	if in.Test != "" {
+		selectorKinds++
+	}
+	if len(tags) > 0 {
+		selectorKinds++
+	}
+	if len(in.Files) > 0 {
+		selectorKinds++
+	}
+	if selectorKinds > 1 {
+		return toolError("test, files, and tags are mutually exclusive", runOutput{}), runOutput{}, nil
+	}
+	if in.Exclude && selectorKinds == 0 {
+		return toolError("exclude requires a test, files, or tags selector", runOutput{}), runOutput{}, nil
 	}
 	args := []string{"run", "--output", "json"}
 	if s.options.ConfigPath != "" {
@@ -372,8 +392,14 @@ func (s *service) run(ctx context.Context, _ *mcp.CallToolRequest, in runInput) 
 	if s.options.WorkingDir != "" {
 		args = append(args, "--working-dir", s.options.WorkingDir)
 	}
-	if in.Tag != "" {
-		args = append(args, "--tag", in.Tag)
+	for _, tag := range tags {
+		args = append(args, "--tag", tag)
+	}
+	for _, file := range in.Files {
+		args = append(args, "--file", file)
+	}
+	if in.Exclude {
+		args = append(args, "--exclude")
 	}
 	if in.Target != "" {
 		args = append(args, "--target", in.Target)

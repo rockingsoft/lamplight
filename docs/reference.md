@@ -382,7 +382,7 @@ Properties:
 | Property | Required | Type | Default | Description |
 | --- | --- | --- | --- | --- |
 | block label | yes | HCL string label | — | Globally unique test name used by the CLI. |
-| `tags` | no | literal list or tuple of strings | `[]` | Used by `run --tag`. |
+| `tags` | no | literal list or tuple of strings | `[]` | Used by repeatable `run --tag` selectors. |
 | `step` | yes | one or more blocks | — | Executed in source order. Step names must be unique in the test. |
 | `outputs` | no | expression map | `{}` | Reserved test-level output expressions. They are parsed and validated but are not currently emitted in `RunResult`. Prefer step outputs for active workflows. |
 
@@ -817,17 +817,21 @@ Options:
 | --- | --- |
 | `-c FILE`, `--config FILE` | Select config file. |
 | `-w DIR`, `--working-dir DIR` | Set effective working directory. |
-| `--tag TAG` | Select tests containing a tag. Cannot be combined with a test name. |
+| `--tag TAG` | Select tests containing a tag. Repeat to match any supplied tag. |
+| `--file FILE` | Select tests declared in a file relative to `project.base_dir`. Repeat to match any supplied file. |
+| `--exclude` | Invert an explicit test-name, file, or tag selector. |
 | `--var NAME=VALUE` | Override a variable. May be repeated; duplicate names are rejected. |
 | `--output FORMAT` | Override `project.output` with `pretty`, `text`, or `json`. |
 | `--fail-fast` | Stop after the first failed or errored test and mark the remaining tests as skipped. |
 | `--keep-artifacts` | Preserve artifacts after a successful run. |
 | `--artifacts-dir DIR` | Select the parent directory for run artifacts. |
 
-With no selector, all tests run once. By default, an errored or failed test does
-not prevent later tests from running. `--fail-fast` stops after the first
-non-passing test. A test name and `--tag` cannot be combined. A selector that
-matches nothing is an error.
+With no selector, all tests run once. Selectors by test name, file, and tag are
+mutually exclusive. Repeated files or tags use OR semantics. `--exclude`
+requires a selector, verifies that it matched at least one test, and then runs
+the complement; a final empty selection is an error. By default, an errored or
+failed test does not prevent later tests from running. `--fail-fast` stops after
+the first non-passing test. A selector that matches nothing is an error.
 
 Execution progress is written to stderr as each datasource check, test, step,
 and trigger starts or completes. In an interactive terminal, in-flight triggers
