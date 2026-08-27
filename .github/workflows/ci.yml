@@ -47,6 +47,39 @@ jobs:
       - name: Run static and race checks
         run: make vet lint test-race
 
+  k6-smoke:
+    name: k6 trigger smoke test
+    needs: unit
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v7
+
+      - name: Set up Go
+        uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Set up k6
+        uses: grafana/setup-k6-action@v1
+        with:
+          k6-version: '1.8.0'
+
+      - name: Run k6 trigger smoke test
+        run: |
+          go build -o "$RUNNER_TEMP/lamplight" ./cmd/lamplight
+          "$RUNNER_TEMP/lamplight" run \
+            --working-dir testdata/k6-smoke \
+            --output json > "$RUNNER_TEMP/k6-smoke-result.json"
+          jq -e '
+            .schema_version == 1 and
+            .status == "passed" and
+            (.tests | length) == 1 and
+            .tests[0].name == "k6 smoke" and
+            .tests[0].status == "passed"
+          ' "$RUNNER_TEMP/k6-smoke-result.json" > /dev/null
+
   e2e:
     name: E2E (${{ matrix.runtime }})
     needs: unit
