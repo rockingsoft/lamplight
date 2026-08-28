@@ -61,6 +61,12 @@ func TestServerListsReadsWritesAndRollsBack(t *testing.T) {
 	if len(capabilities.Triggers) != 10 || len(capabilities.Functions) == 0 {
 		t.Fatalf("capabilities=%#v", capabilities)
 	}
+	metricContext := strings.Join(capabilities.Checks.MetricContext, ",")
+	for _, field := range []string{"metric.type", "metric.attributes", "metric.resource"} {
+		if !strings.Contains(metricContext, field) {
+			t.Errorf("metric context does not advertise %s: %v", field, capabilities.Checks.MetricContext)
+		}
+	}
 	for _, trigger := range capabilities.Triggers {
 		scaffoldResult := call(t, ctx, clientSession, "lamplight_scaffold_test", map[string]any{"trigger": trigger.Block, "test_name": "scaffold_" + trigger.Block})
 		if scaffoldResult.IsError {

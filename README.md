@@ -8,13 +8,15 @@ Lamplight gives coding agents executable contracts for your application's
 telemetry.
 
 Tests are written in Wick, the Lamplight DSL. A Wick definition describes a
-real workflow, the response it should produce, and the OpenTelemetry evidence
-that should exist when the workflow completes. Lamplight runs the test and
-verifies that evidence against your configured observability backend.
+real workflow, the response it should produce, and the trace and Prometheus
+metric evidence that should exist when the workflow completes. Lamplight runs
+the test and verifies that evidence against your configured observability
+backend.
 
 This helps agents determine whether instrumentation is correct, whether trace
-context survives service boundaries, and whether a code change preserves the
-runtime signals your system depends on. The same Wick files tell agents which
+context survives service boundaries, whether operations emit the expected
+metrics, and whether a code change preserves the runtime signals your system
+depends on. The same Wick files tell agents which
 services, spans, attributes, outcomes, and cardinality matter when they
 investigate telemetry directly in the backend.
 
@@ -142,15 +144,16 @@ instrumentation "obi" {
 }
 ```
 
-The blocks describe the Lamplight test environment and the application ports;
-they do not change the application. During each run Lamplight creates the OBI
+The OTLP datasource receives both traces and metrics; metric checks query its
+in-memory store with PromQL. The blocks describe the Lamplight test environment
+and the application ports; they do not change the application. During each run Lamplight creates the OBI
 agent and in-memory receiver, then removes the agent when the run finishes.
 This mode supports Linux local runs, Docker Compose targets, and Kubernetes
 targets. It uses elevated eBPF privileges and is intentionally unsupported for
 local macOS and Windows processes. See the [configuration reference](docs/reference.md#23-zero-code-instrumentation)
 for runtime requirements and Kubernetes permissions.
 
-Lamplight prints live trigger and trace-polling progress. A run continues after
+Lamplight prints live trigger, trace-polling, and metric-polling progress. A run continues after
 a failed test by default so it can report the complete result; use
 `--fail-fast` when an early exit is more useful.
 

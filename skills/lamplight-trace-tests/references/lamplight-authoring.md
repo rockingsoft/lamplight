@@ -93,7 +93,7 @@ test "create_order" {
           span.attributes["db.system"] == "postgresql"
         )
 
-        span_assertions = {
+        assertions = {
           "database span succeeded" = span.status != "error"
           "persistence meets budget" = span.duration < var.MAX_PERSIST_DURATION
         }
@@ -110,7 +110,7 @@ test "create_order" {
           span.attributes["messaging.destination.name"] == "orders.created"
         )
 
-        span_assertions = {
+        assertions = {
           "publish succeeded" = span.status != "error"
         }
 
@@ -131,7 +131,7 @@ A check contains `response`, `spans`, or both. When both exist, both must pass. 
 Every `spans` block requires:
 
 - one boolean `matching` expression;
-- zero or more named boolean `span_assertions`;
+- zero or more named boolean `assertions`;
 - exactly one of `at_least`, `at_most`, or `exactly`;
 - optionally, a positive `observation_window`.
 
@@ -176,6 +176,6 @@ If a predicate does not match:
 3. Start with `matching = span.name != ""`.
 4. Add service, kind, operation, and attribute conditions one at a time.
 5. Match the exact normalized attribute types; `201` is not `"201"`.
-6. Remember that all `span_assertions` must also pass for the span to count.
+6. Remember that all `assertions` must also pass for the span to count.
 
 Increase observation windows only after measuring ingestion or asynchronous-processing delay. Fix propagation, exporter, backend, or predicate problems at their actual layer.

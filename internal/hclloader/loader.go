@@ -43,6 +43,11 @@ func (loader Loader) LoadProject(options config.Options) (*model.ProjectDefiniti
 		diags = append(diags, ds...)
 		definition.Datasource = datasource
 	}
+	if root.MetricsRaw != nil {
+		metrics, ds := parseMetricsSource(root.MetricsRaw)
+		diags = append(diags, ds...)
+		definition.Metrics = metrics
+	}
 	if root.InstrumentationRaw != nil {
 		instrumentation, ds := parseInstrumentation(root.InstrumentationRaw)
 		diags = append(diags, ds...)
@@ -263,7 +268,7 @@ func parseDatasource(block *hcl.Block) (*model.DatasourceDefinition, []model.Dia
 	if _, ok := content.Attributes["endpoint"]; !ok {
 		return nil, diags
 	}
-	datasource := &model.DatasourceDefinition{Kind: block.Labels[0], Endpoint: content.Attributes["endpoint"].Expr, Headers: map[string]hcl.Expression{}, ObservationWindow: 30 * time.Second, SettleWindow: 2 * time.Second, PollingInterval: time.Second}
+	datasource := &model.DatasourceDefinition{Kind: block.Labels[0], Endpoint: content.Attributes["endpoint"].Expr, Headers: map[string]hcl.Expression{}, ObservationWindow: 30 * time.Second, SettleWindow: 2 * time.Second, PollingInterval: 500 * time.Millisecond}
 	if attr, ok := content.Attributes["headers"]; ok {
 		values, ds := expressionMap(attr.Expr)
 		datasource.Headers = values
@@ -293,7 +298,7 @@ func parseDatasource(block *hcl.Block) (*model.DatasourceDefinition, []model.Dia
 		if len(ds) == 0 && value > 0 {
 			datasource.PollingInterval = value
 		} else if len(ds) == 0 {
-			diags = append(diags, diagnostic.Error(diagnostic.CodeSchema, "datasource.polling_interval must be positive", attr.Expr.Range(), "use duration(\"1s\")"))
+			diags = append(diags, diagnostic.Error(diagnostic.CodeSchema, "datasource.polling_interval must be positive", attr.Expr.Range(), "use duration(\"500ms\")"))
 		}
 	}
 	if len(blocksOfType(content.Blocks, "auth")) > 1 {
@@ -324,6 +329,63 @@ func parseDatasource(block *hcl.Block) (*model.DatasourceDefinition, []model.Dia
 		}
 	}
 	return datasource, diags
+}
+
+func parseMetricsSource(block *hcl.Block) (*model.MetricsDefinition, []model.Diagnostic) {
+	if len(block.Labels) != 1 || block.Labels[0] != "prometheus" && block.Labels[0] != "prometheus_scrape" {
+		return nil, []model.Diagnostic{diagnostic.Error(diagnostic.CodeSchema, fmt.Sprintf("unsupported metrics source %q", strings.Join(block.Labels, " ")), block.DefRange, "use prometheus or prometheus_scrape; datasource \"otlp\" receives metrics directly")}
+	}
+	content, hclDiags := block.Body.Content(&hcl.BodySchema{Attributes: []hcl.AttributeSchema{{Name: "endpoint", Required: true}, {Name: "observation_window"}, {Name: "settle_window"}, {Name: "polling_interval"}, {Name: "headers"}}, Blocks: []hcl.BlockHeaderSchema{{Type: "auth"}, {Type: "tls"}}})
+	diags := diagnostic.FromHCL(hclDiags, diagnostic.CodeSchema)
+	endpoint, ok := content.Attributes["endpoint"]
+	if !ok {
+		return nil, diags
+	}
+	result := &model.MetricsDefinition{Kind: block.Labels[0], Endpoint: endpoint.Expr, Headers: map[string]hcl.Expression{}, ObservationWindow: 10 * time.Second, SettleWindow: 2 * time.Second, PollingInterval: 500 * time.Millisecond}
+	if attr, exists := content.Attributes["headers"]; exists {
+		var ds []model.Diagnostic
+		result.Headers, ds = expressionMap(attr.Expr)
+		diags = append(diags, ds...)
+	}
+	for name, target := range map[string]*time.Duration{"observation_window": &result.ObservationWindow, "settle_window": &result.SettleWindow, "polling_interval": &result.PollingInterval} {
+		if attr, exists := content.Attributes[name]; exists {
+			value, ds := durationExpression(attr.Expr)
+			diags = append(diags, ds...)
+			if len(ds) == 0 && value > 0 {
+				*target = value
+			} else if len(ds) == 0 {
+				diags = append(diags, diagnostic.Error(diagnostic.CodeSchema, "metrics."+name+" must be positive", attr.Expr.Range(), "use a positive duration"))
+			}
+		}
+	}
+	auth := blocksOfType(content.Blocks, "auth")
+	if len(auth) > 1 {
+		diags = append(diags, diagnostic.Error(diagnostic.CodeSchema, "metrics allows at most one auth block", auth[1].DefRange, "merge auth settings"))
+	}
+	if len(auth) > 0 {
+		body, ds := auth[0].Body.Content(&hcl.BodySchema{Attributes: []hcl.AttributeSchema{{Name: "bearer_token", Required: true}}})
+		diags = append(diags, diagnostic.FromHCL(ds, diagnostic.CodeSchema)...)
+		if attr, exists := body.Attributes["bearer_token"]; exists {
+			result.BearerToken = attr.Expr
+		}
+	}
+	tlsBlocks := blocksOfType(content.Blocks, "tls")
+	if len(tlsBlocks) > 1 {
+		diags = append(diags, diagnostic.Error(diagnostic.CodeSchema, "metrics allows at most one tls block", tlsBlocks[1].DefRange, "merge TLS settings"))
+	}
+	if len(tlsBlocks) > 0 {
+		body, ds := tlsBlocks[0].Body.Content(&hcl.BodySchema{Attributes: []hcl.AttributeSchema{{Name: "skip_verify"}}})
+		diags = append(diags, diagnostic.FromHCL(ds, diagnostic.CodeSchema)...)
+		if attr, exists := body.Attributes["skip_verify"]; exists {
+			value, valueDiags := attr.Expr.Value(nil)
+			if valueDiags.HasErrors() || !value.IsKnown() || value.IsNull() || value.Type() != cty.Bool {
+				diags = append(diags, diagnostic.Error(diagnostic.CodeSchema, "metrics.tls.skip_verify must be a boolean literal", attr.Expr.Range(), "use true or false"))
+			} else {
+				result.TLSSkipVerify = value.True()
+			}
+		}
+	}
+	return result, diags
 }
 
 func parseDefinitions(file *hcl.File, definition *model.ProjectDefinition) []model.Diagnostic {
@@ -547,7 +609,7 @@ func parseCheck(block *hcl.Block) (model.CheckDefinition, []model.Diagnostic) {
 		return check, []model.Diagnostic{diagnostic.Error(diagnostic.CodeSchema, "check requires one name label", block.DefRange, "add a check name")}
 	}
 	check.Name = block.Labels[0]
-	content, hclDiags := block.Body.Content(&hcl.BodySchema{Attributes: []hcl.AttributeSchema{{Name: "response"}}, Blocks: []hcl.BlockHeaderSchema{{Type: "spans"}}})
+	content, hclDiags := block.Body.Content(&hcl.BodySchema{Attributes: []hcl.AttributeSchema{{Name: "response"}}, Blocks: []hcl.BlockHeaderSchema{{Type: "spans"}, {Type: "metrics"}}})
 	diags = append(diags, diagnostic.FromHCL(hclDiags, diagnostic.CodeSchema)...)
 	if attr, ok := content.Attributes["response"]; ok {
 		response, ds := expressionMap(attr.Expr)
@@ -566,21 +628,81 @@ func parseCheck(block *hcl.Block) (model.CheckDefinition, []model.Diagnostic) {
 		check.Spans = value
 		diags = append(diags, ds...)
 	}
-	if len(check.Response) == 0 && check.Spans == nil {
-		diags = append(diags, diagnostic.Error(diagnostic.CodeSchema, "check must contain response, spans, or both", block.DefRange, "add a response map or spans block"))
+	metrics := blocksOfType(content.Blocks, "metrics")
+	if len(metrics) > 1 {
+		diags = append(diags, diagnostic.Error(diagnostic.CodeSchema, "check allows at most one metrics block", metrics[1].DefRange, "merge metric settings"))
+	}
+	if len(metrics) > 0 {
+		value, ds := parseMetricsCheck(metrics[0])
+		check.Metrics = value
+		diags = append(diags, ds...)
+	}
+	if len(check.Response) == 0 && check.Spans == nil && check.Metrics == nil {
+		diags = append(diags, diagnostic.Error(diagnostic.CodeSchema, "check must contain response, spans, metrics, or a combination", block.DefRange, "add a response map, spans block, or metrics block"))
 	}
 	return check, diags
 }
 
+func parseMetricsCheck(block *hcl.Block) (*model.MetricCheckDefinition, []model.Diagnostic) {
+	result := &model.MetricCheckDefinition{Assertions: map[string]hcl.Expression{}}
+	content, hclDiags := block.Body.Content(&hcl.BodySchema{Attributes: []hcl.AttributeSchema{{Name: "query", Required: true}, {Name: "assertions"}, {Name: "at_least"}, {Name: "at_most"}, {Name: "exactly"}, {Name: "observation_window"}}})
+	diags := diagnostic.FromHCL(hclDiags, diagnostic.CodeSchema)
+	if attr, ok := content.Attributes["query"]; ok {
+		result.Query = attr.Expr
+	}
+	if attr, ok := content.Attributes["assertions"]; ok {
+		var ds []model.Diagnostic
+		result.Assertions, ds = expressionMap(attr.Expr)
+		diags = append(diags, ds...)
+	}
+	quantityCount := 0
+	for _, name := range []string{"at_least", "at_most", "exactly"} {
+		if attr, ok := content.Attributes[name]; ok {
+			quantityCount++
+			value, ds := intExpression(attr.Expr)
+			diags = append(diags, ds...)
+			if len(ds) == 0 && value >= 0 {
+				result.Rule = model.QuantityRule{Kind: name, Value: int(value)}
+			} else if len(ds) == 0 {
+				diags = append(diags, diagnostic.Error(diagnostic.CodeSchema, "metric quantity must be non-negative", attr.Expr.Range(), "use zero or a positive integer"))
+			}
+		}
+	}
+	if quantityCount != 1 {
+		diags = append(diags, diagnostic.Error(diagnostic.CodeSchema, "metrics requires exactly one of at_least, at_most, or exactly", block.DefRange, "choose one quantity rule"))
+	}
+	if attr, ok := content.Attributes["observation_window"]; ok {
+		value, ds := durationExpression(attr.Expr)
+		diags = append(diags, ds...)
+		if len(ds) == 0 && value > 0 {
+			result.ObservationWindow = value
+		} else if len(ds) == 0 {
+			diags = append(diags, diagnostic.Error(diagnostic.CodeSchema, "metrics.observation_window must be positive", attr.Expr.Range(), "use a positive duration"))
+		}
+	}
+	return result, diags
+}
+
 func parseSpans(block *hcl.Block) (*model.SpanCheckDefinition, []model.Diagnostic) {
 	spans := &model.SpanCheckDefinition{Assertions: map[string]hcl.Expression{}}
-	content, hclDiags := block.Body.Content(&hcl.BodySchema{Attributes: []hcl.AttributeSchema{{Name: "matching", Required: true}, {Name: "span_assertions"}, {Name: "at_least"}, {Name: "at_most"}, {Name: "exactly"}, {Name: "observation_window"}}})
+	content, hclDiags := block.Body.Content(&hcl.BodySchema{Attributes: []hcl.AttributeSchema{{Name: "matching", Required: true}, {Name: "assertions"}, {Name: "span_assertions"}, {Name: "at_least"}, {Name: "at_most"}, {Name: "exactly"}, {Name: "observation_window"}}})
 	diags := diagnostic.FromHCL(hclDiags, diagnostic.CodeSchema)
 	if attr, ok := content.Attributes["matching"]; ok {
 		spans.Matching = attr.Expr
 	}
-	if attr, ok := content.Attributes["span_assertions"]; ok {
-		assertions, ds := expressionMap(attr.Expr)
+	assertionsAttr, hasAssertions := content.Attributes["assertions"]
+	legacyAssertionsAttr, hasLegacyAssertions := content.Attributes["span_assertions"]
+	if hasAssertions && hasLegacyAssertions {
+		diags = append(diags, diagnostic.Error(diagnostic.CodeSchema, "spans cannot define both assertions and span_assertions", legacyAssertionsAttr.Expr.Range(), "keep assertions; span_assertions is a legacy alias"))
+	}
+	if hasAssertions {
+		assertions, ds := expressionMap(assertionsAttr.Expr)
+		spans.Assertions = assertions
+		diags = append(diags, ds...)
+	} else if hasLegacyAssertions {
+		// span_assertions shipped before the contextual assertions spelling.
+		// Keep accepting it so existing projects remain loadable.
+		assertions, ds := expressionMap(legacyAssertionsAttr.Expr)
 		spans.Assertions = assertions
 		diags = append(diags, ds...)
 	}
@@ -768,6 +890,12 @@ func validateReferences(definition *model.ProjectDefinition) []model.Diagnostic 
 						diags = append(diags, validateExpression(expression, definition.Variables, seen, "span", "resource", "response", "var", "steps")...)
 					}
 				}
+				if check.Metrics != nil {
+					diags = append(diags, validateExpression(check.Metrics.Query, definition.Variables, seen, "var", "steps")...)
+					for _, expression := range mapExpressions(check.Metrics.Assertions) {
+						diags = append(diags, validateExpression(expression, definition.Variables, seen, "metric", "response", "var", "steps")...)
+					}
+				}
 			}
 			seen[step.Name] = step
 		}
@@ -777,6 +905,13 @@ func validateReferences(definition *model.ProjectDefinition) []model.Diagnostic 
 	}
 	if definition.Datasource != nil {
 		for _, expression := range append([]hcl.Expression{definition.Datasource.Endpoint, definition.Datasource.BearerToken}, mapExpressions(definition.Datasource.Headers)...) {
+			if expression != nil {
+				diags = append(diags, validateExpression(expression, definition.Variables, nil, "var")...)
+			}
+		}
+	}
+	if definition.Metrics != nil {
+		for _, expression := range append([]hcl.Expression{definition.Metrics.Endpoint, definition.Metrics.BearerToken}, mapExpressions(definition.Metrics.Headers)...) {
 			if expression != nil {
 				diags = append(diags, validateExpression(expression, definition.Variables, nil, "var")...)
 			}
@@ -861,6 +996,10 @@ func checkExpressions(check model.CheckDefinition) []hcl.Expression {
 	if check.Spans != nil {
 		result = append(result, check.Spans.Matching)
 		result = append(result, mapExpressions(check.Spans.Assertions)...)
+	}
+	if check.Metrics != nil {
+		result = append(result, check.Metrics.Query)
+		result = append(result, mapExpressions(check.Metrics.Assertions)...)
 	}
 	return result
 }

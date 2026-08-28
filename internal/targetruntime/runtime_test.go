@@ -86,7 +86,7 @@ esac
 	}
 	commands, _ := os.ReadFile(log)
 	got := string(commands)
-	for _, want := range []string{"--pid=host --privileged", "OTEL_EBPF_OPEN_PORT=8080,9090", "OTEL_EXPORTER_OTLP_ENDPOINT=http://lamplight-run-", "otel/ebpf-instrument:v0.11.0"} {
+	for _, want := range []string{"--pid=host --privileged", "OTEL_EBPF_OPEN_PORT=8080,9090", "OTEL_EBPF_METRICS_FEATURES=application", "OTEL_EBPF_METRICS_INTERVAL=500ms", "OTEL_EXPORTER_OTLP_ENDPOINT=http://lamplight-run-", "otel/ebpf-instrument:v0.11.0"} {
 		if !strings.Contains(got, want) {
 			t.Fatalf("commands %q missing %q", got, want)
 		}
@@ -113,7 +113,7 @@ case "$*" in *"apply -f -"*) cat >> "$FAKE_MANIFESTS";; *) cat;; esac
 	}
 	body, _ := os.ReadFile(manifests)
 	got := string(body)
-	for _, want := range []string{`"kind":"Service"`, `"kind":"DaemonSet"`, `"hostPID":true`, `"hostNetwork":true`, `OTEL_EBPF_OPEN_PORT`, `otel/ebpf-instrument:v0.11.0`} {
+	for _, want := range []string{`"kind":"Service"`, `"kind":"DaemonSet"`, `"hostPID":true`, `"hostNetwork":true`, `OTEL_EBPF_OPEN_PORT`, `OTEL_EBPF_METRICS_FEATURES`, `application`, `OTEL_EBPF_METRICS_INTERVAL`, `500ms`, `otel/ebpf-instrument:v0.11.0`} {
 		if !strings.Contains(got, want) {
 			t.Fatalf("manifest %q missing %q", got, want)
 		}

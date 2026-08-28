@@ -14,6 +14,7 @@ are:
 - sequential trigger execution with explicit data flow between steps;
 - W3C trace-context correlation without a control-plane service;
 - bounded polling of direct-query and embedded-OTLP tracing backends;
+- one PromQL contract over remote Prometheus, periodic scrape, and OTLP push;
 - stable, machine-readable results and redacted local artifacts;
 - interfaces at I/O boundaries so behavior can be tested without networks or
   wall-clock delays.
@@ -127,7 +128,10 @@ completion, stability, an exceeded bound, or the observation deadline. See
 | `internal/datasource/jaeger` | Jaeger query API and JSON normalization. |
 | `internal/datasource/search` | Elastic APM and OpenSearch query/normalization. |
 | `internal/datasource/signalfx` | Splunk Observability trace-segment query/normalization. |
-| `internal/datasource/otlp` | Embedded OTLP/HTTP receiver and in-memory trace store. |
+| `internal/datasource/otlp` | Embedded OTLP/HTTP receiver for traces and metrics. |
+| `internal/promqlstore` | Bounded in-memory time series and embedded Prometheus PromQL evaluation. |
+| `internal/metricssource/prometheus` | Remote Prometheus query API and periodic exposition scraping. |
+| `internal/metricpoller` | Pre/post PromQL comparison and metric assertion lifecycle. |
 | `internal/datasource/fake.go` | Scriptable datasource used by tests. |
 | `internal/poller` | Deterministic trace-observation state machine and quantity-rule evaluation. |
 | `internal/executorproto` | Versioned stdio RPC for remote trigger and datasource operations. |
@@ -154,6 +158,7 @@ should integrate through the CLI, Lamplight DSL, JSON output, and schemas.
 | `TriggerExecutor` | Perform one evaluated backend trigger. |
 | `ExpressionEvaluator` | Evaluate one HCL expression in an explicit context. |
 | `DataStore` | Check connectivity and observe a trace by ID. |
+| `MetricStore` | Evaluate one instant PromQL query and return normalized result series. |
 | `TraceContextFactory` | Generate an independent trace context. |
 | `ArtifactStore` | Persist and finalize run snapshots. |
 | `Renderer` | Encode a run result for users or automation. |
@@ -209,9 +214,13 @@ For a new HCL property or block:
 5. Add loader, runtime, failure, redaction, and renderer tests as applicable.
 6. Update `docs/reference.md` and every affected example.
 
-For a new datasource, implement `model.DataStore` and keep normalization inside
+For a new tracing datasource, implement `model.DataStore` and keep normalization inside
 the adapter. The poller and engine should consume normalized spans and remain
 backend-independent.
+
+For a metrics source, implement `model.MetricStore`. Remote Prometheus sources
+may delegate queries to `/api/v1/query`; pull and push sources append samples
+to `internal/promqlstore` and evaluate the same PromQL contract locally.
 
 For a new output field, update `model`, aggregation/redaction, renderers,
 artifacts, the JSON schema, compatibility tests, and the reference together.

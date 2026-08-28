@@ -68,7 +68,7 @@ Avoid identity based on span position, generated IDs, timestamps, pod or host na
 
 ## Separate selection from behavior
 
-Use `matching` to identify candidate spans. Use named `span_assertions` to explain what must be true of each counted span:
+Use `matching` to identify candidate spans. Use named `assertions` to explain what must be true of each counted span:
 
 ```hcl
 spans {
@@ -78,7 +78,7 @@ spans {
     span.attributes["rpc.system"] == "grpc"
   )
 
-  span_assertions = {
+  assertions = {
     "rpc succeeded" = span.status != "error"
   }
 
@@ -86,7 +86,7 @@ spans {
 }
 ```
 
-Lamplight counts a span only when `matching` and every `span_assertions` expression are true. A failed behavioral assertion can therefore appear as a missing matching count; use clear names and inspect evidence during diagnosis.
+Lamplight counts a span only when `matching` and every `assertions` expression are true. A failed behavioral assertion can therefore appear as a missing matching count; use clear names and inspect evidence during diagnosis.
 
 ## Choose quantity semantics deliberately
 
@@ -102,7 +102,7 @@ An unobserved trace is not evidence of zero matching spans. It is an observabili
 Assert duration on the operation whose budget matters, not every span in the trace:
 
 ```hcl
-span_assertions = {
+assertions = {
   "database call meets its 250ms budget" = span.duration < duration("250ms")
 }
 ```

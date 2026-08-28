@@ -58,7 +58,7 @@ func TestConvertHTTPTest(t *testing.T) {
 	if len(result.Warnings) != 0 {
 		t.Fatalf("warnings = %#v", result.Warnings)
 	}
-	if !strings.Contains(text, `span_assertions = {`) || strings.Contains(text, `exactly  = 0`) {
+	if !strings.Contains(text, `assertions = {`) || strings.Contains(text, `exactly  = 0`) {
 		t.Fatalf("span assertions were not preserved directly:\n%s", text)
 	}
 	_, diagnostics := hclsyntax.ParseConfig(result.HCL, "test.wick", hcl.Pos{Line: 1, Column: 1})

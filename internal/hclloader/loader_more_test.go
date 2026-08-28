@@ -2,12 +2,15 @@ package hclloader
 
 import (
 	"math/big"
+	"os"
+	"path/filepath"
 	"testing"
 	"time"
 
 	"github.com/hashicorp/hcl/v2"
 	"github.com/hashicorp/hcl/v2/hclparse"
 	"github.com/zclconf/go-cty/cty"
+	"lamplight/internal/config"
 	"lamplight/internal/diagnostic"
 	"lamplight/internal/model"
 )
@@ -63,7 +66,116 @@ func TestParseDatasourceTable(t *testing.T) {
 			if tt.name == "complete" && (got.ObservationWindow != 4*time.Second || got.SettleWindow != time.Second || got.PollingInterval != 250*time.Millisecond || !got.TLSSkipVerify || got.BearerToken == nil || len(got.Headers) != 1) {
 				t.Fatalf("complete datasource=%#v", got)
 			}
+			if tt.name == "jaeger" && got.PollingInterval != 500*time.Millisecond {
+				t.Fatalf("default polling interval=%s", got.PollingInterval)
+			}
 		})
+	}
+}
+
+func TestParsePrometheusMetricsSourceAndCheck(t *testing.T) {
+	source, diags := parseMetricsSource(loaderBlock(t, "metrics \"prometheus\" {\n  endpoint = var.METRICS_URL\n  headers = { \"X-Tenant\" = \"demo\" }\n  observation_window = duration(\"5s\")\n  settle_window = duration(\"1s\")\n  polling_interval = duration(\"250ms\")\n  auth { bearer_token = var.TOKEN }\n}\n", "metrics", []string{"kind"}))
+	if len(diags) != 0 || source == nil || source.Kind != "prometheus" || source.ObservationWindow != 5*time.Second || source.PollingInterval != 250*time.Millisecond || source.BearerToken == nil {
+		t.Fatalf("source=%#v diagnostics=%#v", source, diags)
+	}
+
+	file, hclDiags := hclparse.NewParser().ParseHCL([]byte("test \"metrics\" {\n  step \"create\" {\n    http_request {\n      method = \"POST\"\n      url = \"http://example.test/orders\"\n    }\n    check \"order metric\" {\n      metrics {\n        query = \"sum by (result) (orders_total)\"\n        assertions = { incremented = metric.delta == 1 }\n        exactly = 1\n      }\n    }\n  }\n}\n"), "metrics.wick")
+	if hclDiags.HasErrors() {
+		t.Fatal(hclDiags.Error())
+	}
+	definition := &model.ProjectDefinition{Variables: map[string]model.VariableDefinition{}, Tests: map[string]model.TestDefinition{}}
+	parsed := parseDefinitions(file, definition)
+	check := definition.Tests["metrics"].Steps[0].Checks[0]
+	if len(parsed) != 0 || check.Metrics == nil || check.Metrics.Query == nil || check.Metrics.Rule.Kind != "exactly" || len(check.Metrics.Assertions) != 1 {
+		t.Fatalf("check=%#v diagnostics=%#v", check, parsed)
+	}
+	_, missingQuery := parseMetricsCheck(loaderBlock(t, "metrics { exactly = 1 }", "metrics", nil))
+	if len(missingQuery) == 0 {
+		t.Fatal("metrics check without PromQL query was accepted")
+	}
+}
+
+func TestAssertionsAreScopedByCheckBlock(t *testing.T) {
+	metricCheck, metricDiags := parseMetricsCheck(loaderBlock(t, `metrics {
+  query = "orders_total"
+  assertions = { incremented = metric.delta == 1 }
+  exactly = 1
+}`, "metrics", nil))
+	if len(metricDiags) != 0 || metricCheck == nil || len(metricCheck.Assertions) != 1 {
+		t.Fatalf("metric check=%#v diagnostics=%#v", metricCheck, metricDiags)
+	}
+
+	spanCheck, spanDiags := parseSpans(loaderBlock(t, `spans {
+  matching = span.name == "create order"
+  assertions = { succeeded = span.status != "error" }
+  exactly = 1
+}`, "spans", nil))
+	if len(spanDiags) != 0 || spanCheck == nil || len(spanCheck.Assertions) != 1 {
+		t.Fatalf("span check=%#v diagnostics=%#v", spanCheck, spanDiags)
+	}
+
+	_, legacyMetricDiags := parseMetricsCheck(loaderBlock(t, `metrics {
+  query = "orders_total"
+  metric_assertions = { incremented = metric.delta == 1 }
+  exactly = 1
+}`, "metrics", nil))
+	legacySpanCheck, legacySpanDiags := parseSpans(loaderBlock(t, `spans {
+  matching = true
+  span_assertions = { succeeded = true }
+  exactly = 1
+}`, "spans", nil))
+	if len(legacyMetricDiags) == 0 || len(legacySpanDiags) != 0 || legacySpanCheck == nil || len(legacySpanCheck.Assertions) != 1 {
+		t.Fatalf("legacy diagnostics: metrics=%#v spans=%#v", legacyMetricDiags, legacySpanDiags)
+	}
+
+	_, mixedSpanDiags := parseSpans(loaderBlock(t, `spans {
+  matching = true
+  assertions = { canonical = true }
+  span_assertions = { legacy = true }
+  exactly = 1
+}`, "spans", nil))
+	if len(mixedSpanDiags) == 0 {
+		t.Fatal("spans accepted assertions and span_assertions together")
+	}
+}
+
+func TestLoadProjectWithPrometheusMetricCheck(t *testing.T) {
+	directory := t.TempDir()
+	base := filepath.Join(directory, "tests")
+	if err := os.Mkdir(base, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	root := "project { base_dir = \"./tests\" }\nvariable \"METRICS_URL\" { default = \"http://127.0.0.1:9090/metrics\" }\nmetrics \"prometheus_scrape\" { endpoint = var.METRICS_URL }\n"
+	if err := os.WriteFile(filepath.Join(directory, ".lamplight"), []byte(root), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	test := "test \"operation\" {\n  step \"run\" {\n    http_request {\n      method = \"POST\"\n      url = \"http://example.test\"\n    }\n    check \"metric\" {\n      metrics {\n        query = \"operations_total\"\n        assertions = { incremented = metric.delta == 1 }\n        exactly = 1\n      }\n    }\n  }\n}\n"
+	if err := os.WriteFile(filepath.Join(base, "operation.wick"), []byte(test), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	definition, diags := (Loader{}).LoadProject(config.Options{ConfigPath: filepath.Join(directory, ".lamplight")})
+	if len(diags) != 0 || definition.Metrics == nil || definition.Metrics.Kind != "prometheus_scrape" || definition.Tests["operation"].Steps[0].Checks[0].Metrics == nil {
+		t.Fatalf("definition=%#v diagnostics=%#v", definition, diags)
+	}
+}
+
+func TestLoadOTLPDatasourceWithPromQLMetricCheck(t *testing.T) {
+	directory := t.TempDir()
+	base := filepath.Join(directory, "tests")
+	if err := os.Mkdir(base, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	root := "project { base_dir = \"./tests\" }\ndatasource \"otlp\" { endpoint = \"http://127.0.0.1:4318\" }\n"
+	if err := os.WriteFile(filepath.Join(directory, ".lamplight"), []byte(root), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	test := "test \"operation\" {\n  step \"run\" {\n    http_request {\n      method = \"POST\"\n      url = \"http://example.test\"\n    }\n    check \"metric\" {\n      metrics {\n        query = \"http_server_request_duration_seconds_count\"\n        exactly = 1\n      }\n    }\n  }\n}\n"
+	if err := os.WriteFile(filepath.Join(base, "operation.wick"), []byte(test), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	definition, diags := (Loader{}).LoadProject(config.Options{ConfigPath: filepath.Join(directory, ".lamplight")})
+	if len(diags) != 0 || definition.Datasource == nil || definition.Datasource.Kind != "otlp" || definition.Metrics != nil || definition.Tests["operation"].Steps[0].Checks[0].Metrics == nil {
+		t.Fatalf("definition=%#v diagnostics=%#v", definition, diags)
 	}
 }
 
@@ -73,7 +185,7 @@ func TestParseDefinitionsTable(t *testing.T) {
 		source    string
 		wantDiags bool
 	}{
-		{name: "complete", source: "variable \"PORT\" {\n  type = int\n  default = 80\n  sensitive = false\n}\nvariable \"WAIT\" {\n  type = duration\n  default = duration(\"1s\")\n}\ntest \"demo\" {\n  tags = [\"z\", \"a\"]\n  outputs = { result = response.body }\n  step \"first\" {\n    http_request {\n      method = \"POST\"\n      url = \"http://example.test\"\n      headers = { X = \"one\" }\n      body = \"body\"\n    }\n    outputs = { id = response.json.id }\n    check \"response\" { response = { ok = response.status_code == 200 } }\n    check \"spans\" {\n      spans {\n        matching = \"span.name == \\\"demo\\\"\"\n        span_assertions = { name = span.name == \"demo\" }\n        exactly = 1\n        observation_window = duration(\"1s\")\n      }\n    }\n  }\n}\n", wantDiags: false},
+		{name: "complete", source: "variable \"PORT\" {\n  type = int\n  default = 80\n  sensitive = false\n}\nvariable \"WAIT\" {\n  type = duration\n  default = duration(\"1s\")\n}\ntest \"demo\" {\n  tags = [\"z\", \"a\"]\n  outputs = { result = response.body }\n  step \"first\" {\n    http_request {\n      method = \"POST\"\n      url = \"http://example.test\"\n      headers = { X = \"one\" }\n      body = \"body\"\n    }\n    outputs = { id = response.json.id }\n    check \"response\" { response = { ok = response.status_code == 200 } }\n    check \"spans\" {\n      spans {\n        matching = \"span.name == \\\"demo\\\"\"\n        assertions = { name = span.name == \"demo\" }\n        exactly = 1\n        observation_window = duration(\"1s\")\n      }\n    }\n  }\n}\n", wantDiags: false},
 		{name: "invalid definitions", source: "variable \"bad-name\" {\n  type = bool\n  default = 1\n  sensitive = \"yes\"\n}\ntest \"empty\" {}\n", wantDiags: true},
 		{name: "invalid checks", source: "test \"bad\" {\n  step \"s\" {\n    check \"empty\" { response = {} }\n    check \"quantity\" {\n      spans {\n        matching = \"x\"\n        at_least = -1\n        at_most = 1\n      }\n    }\n  }\n}\n", wantDiags: true},
 	}

@@ -37,7 +37,7 @@ datasource "tempo" {
   endpoint           = var.TEMPO_ENDPOINT
   observation_window = duration("30s")
   settle_window      = duration("2s")
-  polling_interval   = duration("1s")
+  polling_interval   = duration("500ms")
 }
 ```
 
@@ -167,7 +167,7 @@ test "traced_healthcheck" {
 }
 ```
 
-`matching` and every `span_assertions` expression are applied to each span. A
+`matching` and every `assertions` expression are applied to each span. A
 span contributes to the count only when all predicates return true. Resource
 attributes are accessed directly through `resource`, not through
 `resource.attributes`.
@@ -179,8 +179,8 @@ test needs trace data. It then performs the HTTP request and polls the step's
 trace ID immediately and once per configured `polling_interval`.
 
 - `observation_window` is the hard deadline. The default is 30 seconds.
-- `polling_interval` is the delay between trace queries. The default is 1
-  second.
+- `polling_interval` is the delay between trace queries. The default is 500
+  milliseconds.
 - `settle_window` is the stability period used for negative checks. The
   default is 2 seconds.
 - A per-check `observation_window` can extend the effective step window. The
@@ -276,7 +276,7 @@ lamplight run traced_healthcheck --output json --keep-artifacts
 - Keep artifacts and inspect normalized span evidence.
 - Use the exact attribute types: numeric values are not strings.
 - Access resource attributes as `resource["key"]`.
-- Remember that `matching` and all `span_assertions` must pass on the same span.
+- Remember that `matching` and all `assertions` must pass on the same span.
 - Start with a broad predicate such as `span.name != ""`, then add conditions
   one at a time.
 

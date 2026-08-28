@@ -64,7 +64,7 @@ If Lamplight is exposed through MCP, discover its current capabilities first. Pr
 - Name checks after behavior and evidence, not implementation tickets.
 - Prefer OpenTelemetry semantic conventions and stable domain attributes over incidental span names.
 - Use `resource["service.name"]`, `span.kind`, and a stable operation or domain attribute together when one field alone is ambiguous.
-- Keep span identity in `matching`; keep behavioral expectations in named `span_assertions`.
+- Keep span identity in `matching`; keep behavioral expectations in named `assertions`.
 - Prefer `at_least` for required participation. Use `exactly` only when cardinality is itself a contract, and `at_most` or zero only for meaningful negative guarantees.
 - Base latency limits on an explicit SLO, requirement, or measured baseline with justified headroom. Never invent a threshold.
 - Account for asynchronous export and side effects with measured observation windows. Do not increase timeouts blindly.

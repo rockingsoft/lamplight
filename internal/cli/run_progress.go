@@ -88,6 +88,14 @@ func (p *runProgress) Report(event engine.ProgressEvent) {
 		} else {
 			p.updateSpinner(text)
 		}
+	case engine.ProgressMetricPolling:
+		p.startSpinner("    ", fmt.Sprintf("Polling Prometheus metrics (up to %s)...", event.ObservationWindow))
+	case engine.ProgressMetricObserved:
+		if event.RetryError != "" {
+			p.updateSpinner(fmt.Sprintf("Polling metrics · attempt %d · retrying: %s", event.Attempt, p.redactor.RedactString(event.RetryError)))
+		} else {
+			p.updateSpinner(fmt.Sprintf("Waiting for metric checks · %d %s received · attempt %d", event.MetricCount, plural(event.MetricCount, "series", "series"), event.Attempt))
+		}
 	}
 }
 

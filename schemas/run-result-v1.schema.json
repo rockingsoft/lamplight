@@ -69,6 +69,7 @@
         "status": { "$ref": "#/$defs/status" },
         "response_evidence": { "type": "array", "items": { "$ref": "#/$defs/evidence" } },
         "span_evidence": { "type": "object" },
+        "metric_evidence": { "type": "object" },
         "reason": { "type": "string" }
       },
       "additionalProperties": false

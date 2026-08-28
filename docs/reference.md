@@ -20,7 +20,7 @@ Unless a section says otherwise:
 
 1. [Project layout](#1-project-layout)
 2. [Root configuration](#2-root-configuration)
-3. [Tempo datasource](#3-tempo-datasource)
+3. [Tracing and metrics sources](#3-tracing-and-metrics-sources)
 4. [Variables](#4-variables)
 5. [Tests](#5-tests)
 6. [Steps](#6-steps)
@@ -54,7 +54,8 @@ project-directory/
 ```
 
 The root file contains exactly one `project` block, optionally one tracing
-`datasource`, shared `variable` blocks, and named `target` blocks. Files
+`datasource`, optionally one Prometheus `metrics` source, shared `variable`
+blocks, and named `target` blocks. Files
 discovered below `project.base_dir` may also contain `variable` and `test`
 blocks in any directory arrangement.
 
@@ -63,6 +64,7 @@ The public model has five main concepts:
 ```text
 project
 ├── optional datasource
+├── optional metrics source
 ├── execution targets
 └── tests
     └── ordered steps
@@ -175,9 +177,11 @@ instrumentation "obi" {
 }
 ```
 
-The embedded OTLP/HTTP receiver accepts traces at `/v1/traces` and keeps them
-only for the current run. OBI is started before the trigger and removed after
-the executor exits. Lamplight uses OBI `v0.11.0` by default; `image` can pin an
+The embedded OTLP/HTTP receiver accepts traces at `/v1/traces`, metrics at
+`/v1/metrics`, and keeps both only for the current run. OBI exports its
+`application` metric group every 500 milliseconds so operation checks do not
+wait on its production-oriented default interval. OBI is started before the
+trigger and removed after the executor exits. Lamplight uses OBI `v0.11.0` by default; `image` can pin an
 explicit reviewed image:
 
 ```hcl
@@ -206,8 +210,8 @@ permit `hostPID`, `hostNetwork`, privileged containers, and read-only host
 mounts of `/sys/fs/cgroup` and `/sys/kernel/security`.
 
 Zero-code instrumentation observes supported protocol and library boundaries;
-it does not invent domain spans for internal business operations. Assertions
-should use the spans OBI actually emits.
+it does not invent domain spans or domain metrics for internal business
+operations. Assertions should use the signals OBI actually emits.
 
 Target variables must refer to declared variables and match their types. Value
 precedence is `--var`, `LAMPLIGHT_VAR_*`, selected target, then the variable
@@ -242,7 +246,9 @@ At most one `http_client` block is allowed inside `project`.
 There is no per-step HTTP client configuration and no operation retry setting
 in the current interface.
 
-## 3. Tempo datasource
+## 3. Tracing and metrics sources
+
+### 3.1 Tracing datasource
 
 At most one datasource is allowed, and its label must be `tempo`.
 
@@ -251,7 +257,7 @@ datasource "tempo" {
   endpoint           = var.TEMPO_ENDPOINT
   observation_window = duration("30s")
   settle_window      = duration("2s")
-  polling_interval   = duration("1s")
+  polling_interval   = duration("500ms")
 
   headers = {
     "X-Scope-OrgID" = var.TEMPO_TENANT
@@ -275,7 +281,7 @@ Supported labels are `awsxray`, `azureappinsights`, `dash0`, `datadog`,
 | Adapter mode | Backends | `endpoint` meaning |
 | --- | --- | --- |
 | Direct query | `tempo`, `jaeger`, `elasticapm`, `opensearch`, `signalfx` | Provider query URL. Elastic/OpenSearch URLs include the index. |
-| Embedded OTLP/HTTP | `otlp`, `newrelic`, `lightstep`, `datadog`, `honeycomb`, `signoz`, `dynatrace`, `instana`, `dash0` | Local listener such as `http://127.0.0.1:4318`; export to `/v1/traces`. |
+| Embedded OTLP/HTTP | `otlp`, `newrelic`, `lightstep`, `datadog`, `honeycomb`, `signoz`, `dynatrace`, `instana`, `dash0` | Local listener such as `http://127.0.0.1:4318`; export traces to `/v1/traces`. The `otlp` datasource also accepts metrics at `/v1/metrics`. |
 | OTLP adaptation | `awsxray`, `azureappinsights`, `sumologic` | Local listener. Lamplight ingests their collector output instead of holding cloud query credentials. |
 
 Datasource properties:
@@ -285,7 +291,7 @@ Datasource properties:
 | `endpoint` | yes | string expression | — | `var` | Query URL or local OTLP listener, according to the adapter table. |
 | `observation_window` | no | literal `duration(...)` | `30s` | none | Hard polling limit per step. Must be positive. |
 | `settle_window` | no | literal `duration(...)` | `2s` | none | Stability period used to finish negative checks early. Must be positive. |
-| `polling_interval` | no | literal `duration(...)` | `1s` | none | Delay between trace datasource observations. Must be positive. |
+| `polling_interval` | no | literal `duration(...)` | `500ms` | none | Delay between trace datasource observations. Must be positive. |
 | `headers` | no | map of string expressions | `{}` | `var` | Headers added to readiness and trace requests. Keys are static strings. |
 
 `auth` properties:
@@ -306,6 +312,82 @@ different authorization scheme, such as HTTP Basic.
 The datasource is optional for response-only tests. When a selected test contains a
 `spans` block, a datasource is required and `TestConnection` runs once before
 the first HTTP request. `validate` and `list tests` never connect to a backend.
+
+### 3.2 Metrics sources
+
+At most one metrics source is allowed. A Prometheus server enables PromQL
+instant queries through its stable HTTP API:
+
+```hcl
+metrics "prometheus" {
+  endpoint           = var.PROMETHEUS_URL
+  observation_window = duration("10s")
+  settle_window      = duration("2s")
+  polling_interval   = duration("500ms")
+
+  headers = {
+    "X-Scope-OrgID" = var.METRICS_TENANT
+  }
+
+  auth {
+    bearer_token = var.METRICS_TOKEN
+  }
+
+  tls {
+    skip_verify = false
+  }
+}
+```
+
+Lamplight posts each check's `query` to `/api/v1/query` immediately before and
+during the observation window after the trigger. The query must return an instant vector. Aggregations such
+as `sum by (...)` are therefore evaluated by Prometheus rather than recreated
+inside Lamplight.
+
+For an application exposing `/metrics` without a Prometheus server, use the
+pull adapter. Scraping belongs to this project-level source, not to an
+individual check:
+
+```hcl
+metrics "prometheus_scrape" {
+  endpoint         = var.METRICS_URL
+  polling_interval = duration("500ms")
+}
+```
+
+Lamplight continuously scrapes that endpoint into a bounded in-memory time
+series store. Checks run the same PromQL engine used by Prometheus over those
+stored samples, including aggregations and range-vector functions.
+
+For OBI or another OTLP Metrics producer, use Lamplight's embedded receiver.
+No separate metrics source is configured: `datasource "otlp"` owns both
+`/v1/traces` and `/v1/metrics`:
+
+```hcl
+datasource "otlp" {
+  endpoint = "http://127.0.0.1:4318"
+}
+```
+
+OTLP pushes are translated to Prometheus metric and label names and appended
+to the same in-memory store. Resource attributes are available as normalized
+labels prefixed with `resource_`, for example `resource_service_name`.
+
+When an OTLP tracing datasource and an explicit `metrics "prometheus"` or
+`metrics "prometheus_scrape"` source are both configured, metric checks use
+the explicit metrics source. This supports receiving traces through OTLP while
+querying an existing Prometheus deployment for metrics.
+
+All three sources support `observation_window`, `settle_window`, and
+`polling_interval`. The HTTP sources support `headers`, bearer authentication,
+and TLS configuration. Prometheus-source defaults are `10s`, `2s`, and `500ms`;
+OTLP uses its datasource defaults of `30s`, `2s`, and `500ms`.
+
+For each step containing a metric check, Lamplight observes once immediately
+before the trigger, then observes after the trigger until all checks remain
+satisfied for the settle window or the observation window expires. This
+before/after design verifies the metric effect of the operation rather than an
+unrelated absolute value already present before the test.
 
 ## 4. Variables
 
@@ -549,7 +631,7 @@ not target an output directly and should evaluate the source response instead.
 
 ## 9. Checks
 
-A check contains `response`, `spans`, or both.
+A check contains `response`, `spans`, `metrics`, or a combination.
 
 ```hcl
 check "accepted and traced" {
@@ -565,7 +647,7 @@ check "accepted and traced" {
 ```
 
 The check label is a human-facing string and does not need to be an identifier.
-When both sections exist, both must pass.
+When multiple sections exist, all must pass.
 
 ### 9.1 Response conditions
 
@@ -592,7 +674,7 @@ spans {
     span.attributes["http.status_code"] == 201
   )
 
-  span_assertions = {
+  assertions = {
     "fast enough" = span.duration < duration("500ms")
   }
 
@@ -606,11 +688,15 @@ Properties:
 | Property | Required | Type | Default | Description |
 | --- | --- | --- | --- | --- |
 | `matching` | yes | boolean expression | — | Evaluated once per observed span. |
-| `span_assertions` | no | map of boolean expressions | `{}` | Assertions applied to every span selected by `matching`; every assertion must pass for every selected span. |
+| `assertions` | no | map of boolean expressions | `{}` | Assertions applied to every span selected by `matching`; every assertion must pass for every selected span. |
 | `at_least` | exactly one quantity rule | non-negative literal integer | — | Minimum number of spans selected by `matching`. |
 | `at_most` | exactly one quantity rule | non-negative literal integer | — | Maximum number of spans selected by `matching`. |
 | `exactly` | exactly one quantity rule | non-negative literal integer | — | Exact final number of spans selected by `matching`. |
 | `observation_window` | no | positive literal duration | datasource value | Per-check hard window. The step uses the largest applicable window. |
+
+`span_assertions` remains accepted as a legacy alias for `assertions` so
+projects written for Lamplight v0.2.0 continue to load. New and migrated files
+use `assertions`; defining both names in one `spans` block is invalid.
 
 Quantity behavior:
 
@@ -621,10 +707,59 @@ Quantity behavior:
 | `exactly = N` | on complete evidence with count N; `N=0` may also settle | when count exceeds N or any selected span fails an assertion | passes only if final count is N and all assertions passed |
 
 One poller is shared by all span checks in a step. Lamplight polls immediately,
-then at one-second intervals. A trace that never appears is not interpreted as
+then at 500-millisecond intervals by default. A trace that never appears is not interpreted as
 zero spans; it produces the technical reason `trace_not_observed`.
 An assertion failure produces `span_assertion_failed` and includes aggregated
 assertion evidence; a single failing selected span makes its assertion fail.
+
+### 9.3 Metric checks
+
+```hcl
+check "order operation emitted metrics" {
+  metrics {
+    query = <<-PROMQL
+      sum by (result) (
+        orders_created_total{result="success"}
+      )
+    PROMQL
+
+    assertions = {
+      "increments exactly once" = metric.delta == 1
+    }
+
+    exactly            = 1
+    observation_window = duration("10s")
+  }
+}
+```
+
+`query` is a required string expression evaluated before the trigger using
+`var` and prior `steps`. It is the only metric-selection mechanism for remote
+Prometheus, direct scrapes, and OTLP pushes. `assertions` applies to
+every series returned by PromQL. Exactly one of
+`at_least`, `at_most`, or `exactly` is required and counts selected time
+series, not samples or increments. `observation_window` overrides the source
+window upward for the containing step.
+
+The `metric` object exposes:
+
+| Field | Type | Meaning |
+| --- | --- | --- |
+| `metric.name` | string | Metric name when retained by the source; PromQL aggregations may remove `__name__`. |
+| `metric.type` | string | Source type when retained; PromQL results generally leave it empty. |
+| `metric.labels` | map(string) | Labels returned by PromQL, including normalized OTLP attributes. |
+| `metric.attributes` | map(any) | Reserved for source evidence; PromQL results leave it empty. |
+| `metric.resource` | map(any) | Reserved for source evidence; OTLP resource values are queried through `resource_*` labels. |
+| `metric.previous_value` | number | Value in the pre-trigger snapshot, or zero for a new series. |
+| `metric.value` | number | Value in the current post-trigger PromQL result. |
+| `metric.delta` | number | `value - previous_value`; counter resets remain visible as a negative delta. |
+
+Metric checks poll until their predicates are stable because metric export may
+be asynchronous. A query, receive, scrape, or parse failure is a technical error; an incorrect
+delta, value, type, or series cardinality is a normal check failure with
+`metric_evidence` in JSON results. Exact deltas require an isolated target or
+labels that exclude concurrent traffic. Lamplight deliberately does not infer
+operation ownership from an aggregate series.
 
 ## 10. Expression contexts
 
@@ -633,10 +768,13 @@ Only the roots listed for a context are available.
 | Location | Available roots |
 | --- | --- |
 | datasource endpoint, headers, bearer token | `var` |
+| metrics endpoint, headers, bearer token | `var` |
+| `metrics.query` | `var`, `steps` |
 | `http_request` properties | `var`, `steps` |
 | step `outputs` | `response`, `var`, `steps` |
 | check `response` | `response`, `var`, `steps` |
-| `spans.matching`, `spans.span_assertions` | `span`, `resource`, `response`, `var`, `steps` |
+| `spans.matching`, `spans.assertions` | `span`, `resource`, `response`, `var`, `steps` |
+| `metrics.assertions` | `metric`, `response`, `var`, `steps` |
 | test `outputs` | `var`, `steps` |
 
 ### 10.1 `var`
@@ -880,7 +1018,7 @@ count rules. Generated variables have no default and are supplied with
 The command refuses to overwrite `.wick` files unless `--force` is supplied.
 It rejects unsupported constructs inside importable tests instead of silently
 discarding them. Tracetest's “assert every selected span” behavior maps directly
-to `span_assertions`: the quantity rule counts every span selected by `matching`,
+to `assertions`: the quantity rule counts every span selected by `matching`,
 and every assertion must pass for every selected span.
 
 ## 14. Execution and failure semantics
@@ -891,14 +1029,17 @@ Execution order:
 resolve project
 select and sort tests
 resolve required variables
-connect to Tempo if selected span checks require it
+connect to the tracing datasource when selected span checks require it
+connect to the metrics source when selected metric checks require it
 for each test:
   for each step in source order:
+    evaluate metric queries and capture pre-trigger snapshots
     generate trace context when datasource exists
     evaluate request
     execute HTTP request
     evaluate step outputs
     evaluate response conditions
+    poll and evaluate metric checks against pre/post snapshots
     poll and evaluate span checks
 aggregate result
 render output
@@ -908,7 +1049,7 @@ exit
 
 Status values are `passed`, `failed`, `error`, `cancelled`, and `skipped`.
 
-- False response or span conditions produce `failed` and exit code 2.
+- False response, metric, or span conditions produce `failed` and exit code 2.
 - A failed check stops later steps in its test; those steps are `skipped`.
 - Other selected tests continue after a check failure.
 - Technical errors and cancellation stop the complete run immediately.
@@ -1040,8 +1181,9 @@ Before generating or changing a project, an automated agent should verify:
 5. Every step name and output key is a valid HCL identifier.
 6. Every step has exactly one `http_request`.
 7. Step references point only backward and target declared outputs.
-8. Every check contains response conditions, spans, or both.
+8. Every check contains response conditions, spans, metrics, or a combination.
 9. Every spans block has `matching` and exactly one quantity rule.
-10. Expression roots match the context table in section 10.
-11. Secrets are declared sensitive and supplied outside source control.
-12. `lamplight validate` passes before `lamplight run`.
+10. Every metrics block has `query` and exactly one quantity rule.
+11. Expression roots match the context table in section 10.
+12. Secrets are declared sensitive and supplied outside source control.
+13. `lamplight validate` passes before `lamplight run`.

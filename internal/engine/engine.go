@@ -18,6 +18,7 @@ import (
 	ctyjson "github.com/zclconf/go-cty/cty/json"
 	"lamplight/internal/debuglog"
 	"lamplight/internal/expr"
+	"lamplight/internal/metricpoller"
 	"lamplight/internal/model"
 	"lamplight/internal/poller"
 	"lamplight/internal/result"
@@ -54,6 +55,9 @@ func (e *Engine) Run(ctx context.Context, project *model.Project) model.RunResul
 			return technicalRun(run, "datasource_connection", err.Error())
 		}
 		e.progress(ProgressEvent{Kind: ProgressDatasourceCompleted, RunID: run.RunID, Status: model.StatusPassed})
+	}
+	if needsMetrics(project.Tests) && project.Metrics == nil {
+		return technicalRun(run, "metrics_required", "selected tests contain metric checks but no Prometheus source or OTLP receiver is configured")
 	}
 	for index, test := range project.Tests {
 		if ctx.Err() != nil {
@@ -137,6 +141,30 @@ func (e *Engine) runStep(ctx context.Context, project *model.Project, step model
 		sr.TraceID = string(created.TraceID)
 	}
 	stepsValue := stepsCTY(previous)
+	metricQueries := map[string]string{}
+	metricBaselines := map[string]model.MetricSnapshot{}
+	if stepNeedsMetrics(step) {
+		for _, check := range step.Checks {
+			if check.Metrics == nil {
+				continue
+			}
+			query, queryErr := metricQuery(check.Metrics.Query, project.Variables, stepsValue)
+			if queryErr != nil {
+				sr.Error = diagnostic("metrics_query", fmt.Sprintf("check %q: %v", check.Name, queryErr))
+				return finish(model.StatusError)
+			}
+			metricQueries[check.Name] = query
+			if _, exists := metricBaselines[query]; exists {
+				continue
+			}
+			baseline, scrapeErr := project.Metrics.Snapshot(ctx, query)
+			if scrapeErr != nil {
+				sr.Error = diagnostic("metrics_baseline", scrapeErr.Error())
+				return finish(model.StatusError)
+			}
+			metricBaselines[query] = baseline
+		}
+	}
 	var response model.Response
 	var err error
 	var triggerStarted time.Time
@@ -237,11 +265,37 @@ func (e *Engine) runStep(ctx context.Context, project *model.Project, step model
 	if responseFailed {
 		return finish(model.StatusFailed)
 	}
+	metricChecks := []metricpoller.Check{}
+	for _, check := range step.Checks {
+		if check.Metrics != nil {
+			definition := check
+			metricChecks = append(metricChecks, metricpoller.Check{Name: check.Name, Query: metricQueries[check.Name], Rule: check.Metrics.Rule, Assertions: metricAssertions(definition, response, project.Variables, stepsValue)})
+		}
+	}
+	if len(metricChecks) > 0 {
+		window, settle, interval := metricWindows(project.Definition.Metrics, project.Definition.Datasource, step.Checks)
+		e.progress(ProgressEvent{Kind: ProgressMetricPolling, StepName: step.Name, ObservationWindow: window})
+		polled, pollErr := metricpoller.Poll(ctx, project.Metrics, metricBaselines, metricpoller.Config{ObservationWindow: window, SettleWindow: settle, Interval: interval, Clock: e.Clock, Progress: func(progress metricpoller.Progress) {
+			e.progress(ProgressEvent{Kind: ProgressMetricObserved, StepName: step.Name, Attempt: progress.Attempt, MetricCount: progress.MetricCount, RetryError: progress.RetryError})
+		}}, metricChecks)
+		if pollErr != nil {
+			sr.Error = diagnostic("metrics_observation", pollErr.Error())
+			return finish(model.StatusError)
+		}
+		for _, observed := range polled.Checks {
+			mergeCheck(&sr.Checks, observed)
+			if observed.Status == model.StatusFailed {
+				sr.Status = model.StatusFailed
+			} else if observed.Status == model.StatusCancelled {
+				return finish(model.StatusCancelled)
+			}
+		}
+	}
 	if len(spanChecks) > 0 {
 		window, settle := traceWindows(project.Definition.Datasource, step.Checks)
 		debuglog.Debug(ctx, "polling trace", "trace_id", trace.TraceID, "checks", len(spanChecks), "observation_window", window, "settle_window", settle)
 		e.progress(ProgressEvent{Kind: ProgressTracePolling, StepName: step.Name, ObservationWindow: window})
-		interval := time.Second
+		interval := 500 * time.Millisecond
 		if project.Definition.Datasource != nil && project.Definition.Datasource.PollingInterval > 0 {
 			interval = project.Definition.Datasource.PollingInterval
 		}
@@ -441,6 +495,47 @@ func spanAssertions(check model.CheckDefinition, response model.Response, variab
 	return assertions
 }
 
+func metricQuery(expression hcl.Expression, variables map[string]model.SensitiveValue, steps cty.Value) (string, error) {
+	if expression == nil {
+		return "", nil
+	}
+	value, diags := expr.Evaluate(expression, &hcl.EvalContext{Variables: map[string]cty.Value{"var": expr.Variables(variables), "steps": steps}, Functions: expr.Functions()})
+	if diags.HasErrors() || !value.IsKnown() || value.IsNull() || value.Type() != cty.String {
+		return "", fmt.Errorf("query must evaluate to a string: %s", diags.Error())
+	}
+	return value.AsString(), nil
+}
+
+func metricAssertions(check model.CheckDefinition, response model.Response, variables map[string]model.SensitiveValue, steps cty.Value) []metricpoller.Assertion {
+	assertions := make([]metricpoller.Assertion, 0, len(check.Metrics.Assertions))
+	for _, name := range sortedExpressions(check.Metrics.Assertions) {
+		expression := check.Metrics.Assertions[name]
+		assertions = append(assertions, metricpoller.Assertion{Name: name, Source: model.Range(expression.Range()), Evaluate: func(metric model.MetricPoint) (bool, error) {
+			value, diags := expr.Evaluate(expression, expr.MetricContext(metric, response, variables, steps))
+			if diags.HasErrors() {
+				return false, fmt.Errorf("metric assertion: %s", diags.Error())
+			}
+			return expr.RequireBool(value)
+		}})
+	}
+	return assertions
+}
+
+func metricWindows(source *model.MetricsDefinition, datasource *model.DatasourceDefinition, checks []model.CheckDefinition) (time.Duration, time.Duration, time.Duration) {
+	window, settle, interval := 10*time.Second, 2*time.Second, 500*time.Millisecond
+	if source != nil {
+		window, settle, interval = source.ObservationWindow, source.SettleWindow, source.PollingInterval
+	} else if datasource != nil && datasource.Kind == "otlp" {
+		window, settle, interval = datasource.ObservationWindow, datasource.SettleWindow, datasource.PollingInterval
+	}
+	for _, check := range checks {
+		if check.Metrics != nil && check.Metrics.ObservationWindow > window {
+			window = check.Metrics.ObservationWindow
+		}
+	}
+	return window, settle, interval
+}
+
 func traceWindows(datasource *model.DatasourceDefinition, checks []model.CheckDefinition) (time.Duration, time.Duration) {
 	window, settle := 30*time.Second, 2*time.Second
 	if datasource != nil {
@@ -499,7 +594,20 @@ func sortedExpressions(values map[string]hcl.Expression) []string {
 func mergeCheck(values *[]model.CheckResult, observed model.CheckResult) {
 	for i := range *values {
 		if (*values)[i].Name == observed.Name {
-			observed.ResponseEvidence = (*values)[i].ResponseEvidence
+			current := (*values)[i]
+			observed.ResponseEvidence = current.ResponseEvidence
+			if observed.SpanEvidence == nil {
+				observed.SpanEvidence = current.SpanEvidence
+			}
+			if observed.MetricEvidence == nil {
+				observed.MetricEvidence = current.MetricEvidence
+			}
+			// A check containing multiple signal blocks is conjunctive. Polling one
+			// signal later must not replace an earlier failure with a pass.
+			if current.Status == model.StatusFailed && observed.Status != model.StatusFailed {
+				observed.Status = current.Status
+				observed.Reason = current.Reason
+			}
 			*values = append((*values)[:i], append([]model.CheckResult{observed}, (*values)[i+1:]...)...)
 			return
 		}
@@ -514,6 +622,26 @@ func needsDatasource(tests []model.TestDefinition) bool {
 					return true
 				}
 			}
+		}
+	}
+	return false
+}
+
+func needsMetrics(tests []model.TestDefinition) bool {
+	for _, test := range tests {
+		for _, step := range test.Steps {
+			if stepNeedsMetrics(step) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func stepNeedsMetrics(step model.StepDefinition) bool {
+	for _, check := range step.Checks {
+		if check.Metrics != nil {
+			return true
 		}
 	}
 	return false
