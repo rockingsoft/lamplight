@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -388,6 +389,74 @@ func TestRunContinuesByDefaultAndSupportsFailFastWithCleanJSON(t *testing.T) {
 				t.Errorf("JSON output must not include pretty progress on stderr: %q", stderr.String())
 			}
 		})
+	}
+}
+
+func TestRunPrefersExplicitPrometheusMetricsOverOTLPDatasource(t *testing.T) {
+	trigger := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, _ *http.Request) {
+		writer.Header().Set("Content-Type", "application/json")
+		writer.WriteHeader(http.StatusNoContent)
+	}))
+	defer trigger.Close()
+	prometheus := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		if request.URL.Path != "/api/v1/query" {
+			http.NotFound(writer, request)
+			return
+		}
+		writer.Header().Set("Content-Type", "application/json")
+		_, _ = writer.Write([]byte(`{"status":"success","data":{"resultType":"vector","result":[{"metric":{"__name__":"operations_total"},"value":[1,"7"]}]}}`))
+	}))
+	defer prometheus.Close()
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	otlpEndpoint := "http://" + listener.Addr().String()
+	_ = listener.Close()
+
+	directory := t.TempDir()
+	if err := os.WriteFile(filepath.Join(directory, ".lamplight"), []byte(fmt.Sprintf(`project {
+  base_dir = "."
+  output = "json"
+}
+datasource "otlp" {
+  endpoint = %q
+}
+metrics "prometheus" {
+  endpoint = %q
+  observation_window = duration("100ms")
+  settle_window = duration("10ms")
+  polling_interval = duration("5ms")
+}
+`, otlpEndpoint, prometheus.URL)), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(directory, "test.wick"), []byte(fmt.Sprintf(`test "metrics source" {
+  step "request" {
+    http_request {
+      method = "GET"
+      url = %q
+    }
+    check "explicit prometheus is used" {
+      metrics {
+        query = "operations_total"
+        assertions = { "value is returned" = metric.value == 7 }
+        exactly = 1
+      }
+    }
+  }
+}
+`, trigger.URL)), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	var stdout, stderr bytes.Buffer
+	if code := Main(context.Background(), []string{"run", "-w", directory}, IO{Out: &stdout, Err: &stderr}); code != 0 {
+		t.Fatalf("code=%d stdout=%s stderr=%s", code, stdout.String(), stderr.String())
+	}
+	var run model.RunResult
+	if err := json.Unmarshal(stdout.Bytes(), &run); err != nil || run.Status != model.StatusPassed {
+		t.Fatalf("run=%#v decodeErr=%v stdout=%s stderr=%s", run, err, stdout.String(), stderr.String())
 	}
 }
 

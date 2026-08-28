@@ -550,7 +550,7 @@ func run(ctx context.Context, args []string, streams IO) int {
 				return 1
 			}
 			runtimeProject.Datasource = store
-			if def.Datasource.Kind == "otlp" {
+			if def.Datasource.Kind == "otlp" && runtimeProject.Metrics == nil {
 				metricStore, ok := store.(model.MetricStore)
 				if !ok {
 					writeLine(streams.Err, "error: configured OTLP datasource does not accept metrics")
@@ -581,7 +581,7 @@ func run(ctx context.Context, args []string, streams IO) int {
 		if datasourceConfig != nil {
 			runtimeProject.Datasource = client
 		}
-		if datasourceConfig != nil && datasourceConfig.Kind == "otlp" {
+		if datasourceConfig != nil && datasourceConfig.Kind == "otlp" && runtimeProject.Metrics == nil {
 			runtimeProject.Metrics = client
 		}
 	}

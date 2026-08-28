@@ -373,6 +373,11 @@ OTLP pushes are translated to Prometheus metric and label names and appended
 to the same in-memory store. Resource attributes are available as normalized
 labels prefixed with `resource_`, for example `resource_service_name`.
 
+When an OTLP tracing datasource and an explicit `metrics "prometheus"` or
+`metrics "prometheus_scrape"` source are both configured, metric checks use
+the explicit metrics source. This supports receiving traces through OTLP while
+querying an existing Prometheus deployment for metrics.
+
 All three sources support `observation_window`, `settle_window`, and
 `polling_interval`. The HTTP sources support `headers`, bearer authentication,
 and TLS configuration. Prometheus-source defaults are `10s`, `2s`, and `500ms`;
@@ -688,6 +693,10 @@ Properties:
 | `at_most` | exactly one quantity rule | non-negative literal integer | — | Maximum number of spans selected by `matching`. |
 | `exactly` | exactly one quantity rule | non-negative literal integer | — | Exact final number of spans selected by `matching`. |
 | `observation_window` | no | positive literal duration | datasource value | Per-check hard window. The step uses the largest applicable window. |
+
+`span_assertions` remains accepted as a legacy alias for `assertions` so
+projects written for Lamplight v0.2.0 continue to load. New and migrated files
+use `assertions`; defining both names in one `spans` block is invalid.
 
 Quantity behavior:
 
@@ -1020,14 +1029,17 @@ Execution order:
 resolve project
 select and sort tests
 resolve required variables
-connect to Tempo if selected span checks require it
+connect to the tracing datasource when selected span checks require it
+connect to the metrics source when selected metric checks require it
 for each test:
   for each step in source order:
+    evaluate metric queries and capture pre-trigger snapshots
     generate trace context when datasource exists
     evaluate request
     execute HTTP request
     evaluate step outputs
     evaluate response conditions
+    poll and evaluate metric checks against pre/post snapshots
     poll and evaluate span checks
 aggregate result
 render output
@@ -1037,7 +1049,7 @@ exit
 
 Status values are `passed`, `failed`, `error`, `cancelled`, and `skipped`.
 
-- False response or span conditions produce `failed` and exit code 2.
+- False response, metric, or span conditions produce `failed` and exit code 2.
 - A failed check stops later steps in its test; those steps are `skipped`.
 - Other selected tests continue after a check failure.
 - Technical errors and cancellation stop the complete run immediately.

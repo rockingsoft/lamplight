@@ -169,7 +169,10 @@ func (s *Store) exportMetrics(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "invalid OTLP metrics payload", http.StatusBadRequest)
 		return
 	}
-	s.ingestMetrics(request.ResourceMetrics)
+	if err := s.ingestMetrics(request.ResourceMetrics); err != nil {
+		http.Error(w, "invalid OTLP metrics: "+err.Error(), http.StatusBadRequest)
+		return
+	}
 	response := &metriccollector.ExportMetricsServiceResponse{}
 	if strings.Contains(contentType, "json") {
 		w.Header().Set("Content-Type", "application/json")
@@ -182,28 +185,36 @@ func (s *Store) exportMetrics(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-func (s *Store) ingestMetrics(groups []*metricpb.ResourceMetrics) {
+func (s *Store) ingestMetrics(groups []*metricpb.ResourceMetrics) error {
 	s.mu.Lock()
+	defer s.mu.Unlock()
+	next := make(map[string]model.MetricSample, len(s.metrics))
+	for key, value := range s.metrics {
+		next[key] = value
+	}
 	for _, group := range groups {
 		resource := normalizedAttrs(group.GetResource().GetAttributes())
 		for _, scope := range group.GetScopeMetrics() {
 			for _, metric := range scope.GetMetrics() {
-				s.ingestMetric(metric, resource)
+				s.ingestMetric(next, metric, resource)
 			}
 		}
 	}
-	samples := make([]model.MetricSample, 0, len(s.metrics))
-	for _, sample := range s.metrics {
+	samples := make([]model.MetricSample, 0, len(next))
+	for _, sample := range next {
 		samples = append(samples, sample)
 	}
-	s.mu.Unlock()
-	_ = s.queries.Ingest(samples, time.Now())
+	if err := s.queries.Ingest(samples, time.Now()); err != nil {
+		return err
+	}
+	s.metrics = next
+	return nil
 }
 
-func (s *Store) ingestMetric(metric *metricpb.Metric, resource map[string]any) {
+func (s *Store) ingestMetric(metrics map[string]model.MetricSample, metric *metricpb.Metric, resource map[string]any) {
 	if gauge := metric.GetGauge(); gauge != nil {
 		for _, point := range gauge.DataPoints {
-			s.putMetric(numberSample(metric, "gauge", otlptranslator.MetricTypeGauge, numberValue(point), point.Attributes, resource), false)
+			putMetric(metrics, numberSample(metric, "gauge", otlptranslator.MetricTypeGauge, numberValue(point), point.Attributes, resource), false)
 		}
 		return
 	}
@@ -218,7 +229,7 @@ func (s *Store) ingestMetric(metric *metricpb.Metric, resource map[string]any) {
 		}
 		add := sum.AggregationTemporality == metricpb.AggregationTemporality_AGGREGATION_TEMPORALITY_DELTA
 		for _, point := range sum.DataPoints {
-			s.putMetric(numberSample(metric, metricType, translationType, numberValue(point), point.Attributes, resource), add)
+			putMetric(metrics, numberSample(metric, metricType, translationType, numberValue(point), point.Attributes, resource), add)
 		}
 		return
 	}
@@ -226,8 +237,8 @@ func (s *Store) ingestMetric(metric *metricpb.Metric, resource map[string]any) {
 		add := histogram.AggregationTemporality == metricpb.AggregationTemporality_AGGREGATION_TEMPORALITY_DELTA
 		for _, point := range histogram.DataPoints {
 			base := translatedMetricName(metric, otlptranslator.MetricTypeHistogram)
-			s.putMetric(sample(base+"_count", "histogram", float64(point.Count), point.Attributes, resource), add)
-			s.putMetric(sample(base+"_sum", "histogram", point.GetSum(), point.Attributes, resource), add)
+			putMetric(metrics, sample(base+"_count", "histogram", float64(point.Count), point.Attributes, resource), add)
+			putMetric(metrics, sample(base+"_sum", "histogram", point.GetSum(), point.Attributes, resource), add)
 			cumulative := uint64(0)
 			for index, count := range point.BucketCounts {
 				cumulative += count
@@ -237,7 +248,7 @@ func (s *Store) ingestMetric(metric *metricpb.Metric, resource map[string]any) {
 				}
 				bucket := sample(base+"_bucket", "histogram", float64(cumulative), point.Attributes, resource)
 				bucket.Labels["le"] = upperBound
-				s.putMetric(bucket, add)
+				putMetric(metrics, bucket, add)
 			}
 		}
 		return
@@ -246,20 +257,20 @@ func (s *Store) ingestMetric(metric *metricpb.Metric, resource map[string]any) {
 		add := histogram.AggregationTemporality == metricpb.AggregationTemporality_AGGREGATION_TEMPORALITY_DELTA
 		for _, point := range histogram.DataPoints {
 			base := translatedMetricName(metric, otlptranslator.MetricTypeExponentialHistogram)
-			s.putMetric(sample(base+"_count", "exponential_histogram", float64(point.Count), point.Attributes, resource), add)
-			s.putMetric(sample(base+"_sum", "exponential_histogram", point.GetSum(), point.Attributes, resource), add)
+			putMetric(metrics, sample(base+"_count", "exponential_histogram", float64(point.Count), point.Attributes, resource), add)
+			putMetric(metrics, sample(base+"_sum", "exponential_histogram", point.GetSum(), point.Attributes, resource), add)
 		}
 		return
 	}
 	if summary := metric.GetSummary(); summary != nil {
 		for _, point := range summary.DataPoints {
 			base := translatedMetricName(metric, otlptranslator.MetricTypeSummary)
-			s.putMetric(sample(base+"_count", "summary", float64(point.Count), point.Attributes, resource), false)
-			s.putMetric(sample(base+"_sum", "summary", point.Sum, point.Attributes, resource), false)
+			putMetric(metrics, sample(base+"_count", "summary", float64(point.Count), point.Attributes, resource), false)
+			putMetric(metrics, sample(base+"_sum", "summary", point.Sum, point.Attributes, resource), false)
 			for _, quantileValue := range point.QuantileValues {
 				quantile := sample(base, "summary", quantileValue.Value, point.Attributes, resource)
 				quantile.Labels["quantile"] = strconv.FormatFloat(quantileValue.Quantile, 'g', -1, 64)
-				s.putMetric(quantile, false)
+				putMetric(metrics, quantile, false)
 			}
 		}
 	}
@@ -314,12 +325,12 @@ func normalizedAttrs(attributes []*common.KeyValue) map[string]any {
 	return result
 }
 
-func (s *Store) putMetric(sample model.MetricSample, additive bool) {
+func putMetric(metrics map[string]model.MetricSample, sample model.MetricSample, additive bool) {
 	key := metricKey(sample)
 	if additive {
-		sample.Value += s.metrics[key].Value
+		sample.Value += metrics[key].Value
 	}
-	s.metrics[key] = sample
+	metrics[key] = sample
 }
 
 func metricKey(sample model.MetricSample) string {

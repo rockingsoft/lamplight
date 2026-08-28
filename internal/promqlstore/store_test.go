@@ -2,6 +2,7 @@ package promqlstore
 
 import (
 	"context"
+	"math"
 	"testing"
 	"time"
 
@@ -25,6 +26,23 @@ func TestStoreEvaluatesPromQLAggregation(t *testing.T) {
 	}
 	if len(snapshot.Samples) != 2 || snapshot.Samples[0].Labels["result"] != "error" || snapshot.Samples[0].Value != 1 || snapshot.Samples[1].Labels["result"] != "ok" || snapshot.Samples[1].Value != 5 {
 		t.Fatalf("snapshot=%#v", snapshot)
+	}
+}
+
+func TestStoreRejectsInvalidBatchAtomically(t *testing.T) {
+	now := time.Unix(100, 0)
+	store := New()
+	store.now = func() time.Time { return now }
+	err := store.Ingest([]model.MetricSample{
+		{Name: "valid_total", Value: 1},
+		{Name: "invalid_total", Value: math.NaN()},
+	}, now)
+	if err == nil {
+		t.Fatal("invalid batch was accepted")
+	}
+	snapshot, snapshotErr := store.Snapshot(context.Background(), `valid_total`)
+	if snapshotErr != nil || len(snapshot.Samples) != 0 {
+		t.Fatalf("invalid batch was partially ingested: snapshot=%#v err=%v", snapshot, snapshotErr)
 	}
 }
 

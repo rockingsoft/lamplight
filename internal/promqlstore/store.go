@@ -70,6 +70,11 @@ func New() *Store {
 // Ingest records one scrape or OTLP export. Samples without an explicit source
 // timestamp use receivedAt, which keeps scrape and push sources on one clock.
 func (s *Store) Ingest(samples []model.MetricSample, receivedAt time.Time) error {
+	for _, sample := range samples {
+		if sample.Name == "" || math.IsNaN(sample.Value) || math.IsInf(sample.Value, 0) {
+			return fmt.Errorf("cannot ingest invalid Prometheus sample %q", sample.Name)
+		}
+	}
 	if receivedAt.IsZero() {
 		receivedAt = s.now()
 	}
@@ -79,9 +84,6 @@ func (s *Store) Ingest(samples []model.MetricSample, receivedAt time.Time) error
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	for _, sample := range samples {
-		if sample.Name == "" || math.IsNaN(sample.Value) || math.IsInf(sample.Value, 0) {
-			return fmt.Errorf("cannot ingest invalid Prometheus sample %q", sample.Name)
-		}
 		labelMap := make(map[string]string, len(sample.Labels)+len(sample.Resource)+1)
 		labelMap[metricNameLabel] = sample.Name
 		for name, value := range sample.Labels {

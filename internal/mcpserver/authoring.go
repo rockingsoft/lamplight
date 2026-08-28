@@ -49,7 +49,7 @@ func (s *service) capabilities(_ context.Context, _ *mcp.CallToolRequest, _ empt
 		Checks: checkCapability{
 			ResponseContext:       []string{"response.status_code", "response.headers", "response.body", "response.json", "var", "steps"},
 			SpanContext:           []string{"span.trace_id", "span.span_id", "span.parent_span_id", "span.name", "span.kind", "span.status", "span.status_message", "span.duration", "span.attributes", "resource", "response", "var", "steps"},
-			MetricContext:         []string{"metric.name", "metric.labels", "metric.previous_value", "metric.value", "metric.delta", "response", "var", "steps"},
+			MetricContext:         []string{"metric.name", "metric.type", "metric.labels", "metric.attributes", "metric.resource", "metric.previous_value", "metric.value", "metric.delta", "response", "var", "steps"},
 			QuantityRules:         []string{"at_least", "at_most", "exactly"},
 			ObservationWindowType: "duration",
 			Notes: []string{

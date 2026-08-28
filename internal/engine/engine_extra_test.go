@@ -112,6 +112,34 @@ func TestRunVerifiesOperationMetricDeltaFromPromQL(t *testing.T) {
 	}
 }
 
+func TestRunKeepsMetricFailureWhenCombinedSpanCheckPasses(t *testing.T) {
+	check := model.CheckDefinition{
+		Name: "operation telemetry",
+		Metrics: &model.MetricCheckDefinition{
+			Query:      parseExpr(t, `"operations_total"`),
+			Assertions: map[string]hcl.Expression{"increments once": parseExpr(t, `metric.delta == 1`)},
+			Rule:       model.QuantityRule{Kind: "exactly", Value: 1},
+		},
+		Spans: &model.SpanCheckDefinition{
+			Matching: parseExpr(t, `span.name == "operation"`),
+			Rule:     model.QuantityRule{Kind: "at_least", Value: 1},
+		},
+	}
+	step := model.StepDefinition{Name: "request", HTTP: model.HTTPRequestDefinition{Method: parseExpr(t, `"GET"`), URL: parseExpr(t, `"http://example.test"`)}, Checks: []model.CheckDefinition{check}}
+	project := engineProject(step)
+	project.Definition.Datasource = &model.DatasourceDefinition{ObservationWindow: time.Second, SettleWindow: time.Second, PollingInterval: time.Second}
+	project.Definition.Metrics = &model.MetricsDefinition{ObservationWindow: time.Second, SettleWindow: time.Second, PollingInterval: time.Second}
+	project.Datasource = &datasource.Fake{Script: []datasource.ScriptedObservation{{Observation: model.TraceObservation{Found: true, Valid: true, Complete: true, Spans: []model.Span{{Name: "operation"}}}}}}
+	unchanged := model.MetricSnapshot{Samples: []model.MetricSample{{Name: "operations_total", Value: 1}}}
+	project.Metrics = &metricStore{snapshots: []model.MetricSnapshot{unchanged, unchanged}}
+
+	run := (&Engine{HTTP: fakeHTTP{response: model.Response{StatusCode: 200}}, TraceFactory: traceFactory{context: model.TestTraceContext{TraceID: "trace"}}, Clock: &engineClock{now: time.Unix(0, 0)}}).Run(context.Background(), project)
+	result := run.Tests[0].Steps[0].Checks[0]
+	if run.Status != model.StatusFailed || result.Status != model.StatusFailed || result.Reason != "metric_assertion_failed" || result.MetricEvidence == nil || result.SpanEvidence == nil {
+		t.Fatalf("combined result=%#v run_status=%s", result, run.Status)
+	}
+}
+
 func engineProject(step model.StepDefinition) *model.Project {
 	definition := &model.ProjectDefinition{HTTPClient: model.DefaultHTTPClientConfig()}
 	return &model.Project{Definition: definition, Variables: map[string]model.SensitiveValue{}, Tests: []model.TestDefinition{{Name: "test", Steps: []model.StepDefinition{step}}}, HTTPClient: definition.HTTPClient}
@@ -405,6 +433,11 @@ func TestSpanMatcherAndCheckMerging(t *testing.T) {
 	mergeCheck(&checks, model.CheckResult{Name: "span", Status: model.StatusFailed, Reason: "count"})
 	if checks[0].Status != model.StatusFailed || len(checks[0].ResponseEvidence) != 1 {
 		t.Fatalf("merged checks=%#v", checks)
+	}
+	checks[0].MetricEvidence = &model.MetricEvidence{MatchCount: 0}
+	mergeCheck(&checks, model.CheckResult{Name: "span", Status: model.StatusPassed, SpanEvidence: &model.SpanEvidence{MatchCount: 1}})
+	if checks[0].Status != model.StatusFailed || checks[0].Reason != "count" || checks[0].MetricEvidence == nil || checks[0].SpanEvidence == nil {
+		t.Fatalf("later passing signal replaced earlier failure: %#v", checks[0])
 	}
 	mergeCheck(&checks, model.CheckResult{Name: "new", Status: model.StatusPassed})
 	if len(checks) != 2 {

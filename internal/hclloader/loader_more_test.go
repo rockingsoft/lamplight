@@ -119,13 +119,23 @@ func TestAssertionsAreScopedByCheckBlock(t *testing.T) {
   metric_assertions = { incremented = metric.delta == 1 }
   exactly = 1
 }`, "metrics", nil))
-	_, legacySpanDiags := parseSpans(loaderBlock(t, `spans {
+	legacySpanCheck, legacySpanDiags := parseSpans(loaderBlock(t, `spans {
   matching = true
   span_assertions = { succeeded = true }
   exactly = 1
 }`, "spans", nil))
-	if len(legacyMetricDiags) == 0 || len(legacySpanDiags) == 0 {
+	if len(legacyMetricDiags) == 0 || len(legacySpanDiags) != 0 || legacySpanCheck == nil || len(legacySpanCheck.Assertions) != 1 {
 		t.Fatalf("legacy diagnostics: metrics=%#v spans=%#v", legacyMetricDiags, legacySpanDiags)
+	}
+
+	_, mixedSpanDiags := parseSpans(loaderBlock(t, `spans {
+  matching = true
+  assertions = { canonical = true }
+  span_assertions = { legacy = true }
+  exactly = 1
+}`, "spans", nil))
+	if len(mixedSpanDiags) == 0 {
+		t.Fatal("spans accepted assertions and span_assertions together")
 	}
 }
 

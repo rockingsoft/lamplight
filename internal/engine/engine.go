@@ -602,6 +602,12 @@ func mergeCheck(values *[]model.CheckResult, observed model.CheckResult) {
 			if observed.MetricEvidence == nil {
 				observed.MetricEvidence = current.MetricEvidence
 			}
+			// A check containing multiple signal blocks is conjunctive. Polling one
+			// signal later must not replace an earlier failure with a pass.
+			if current.Status == model.StatusFailed && observed.Status != model.StatusFailed {
+				observed.Status = current.Status
+				observed.Reason = current.Reason
+			}
 			*values = append((*values)[:i], append([]model.CheckResult{observed}, (*values)[i+1:]...)...)
 			return
 		}

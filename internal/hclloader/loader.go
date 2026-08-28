@@ -685,13 +685,24 @@ func parseMetricsCheck(block *hcl.Block) (*model.MetricCheckDefinition, []model.
 
 func parseSpans(block *hcl.Block) (*model.SpanCheckDefinition, []model.Diagnostic) {
 	spans := &model.SpanCheckDefinition{Assertions: map[string]hcl.Expression{}}
-	content, hclDiags := block.Body.Content(&hcl.BodySchema{Attributes: []hcl.AttributeSchema{{Name: "matching", Required: true}, {Name: "assertions"}, {Name: "at_least"}, {Name: "at_most"}, {Name: "exactly"}, {Name: "observation_window"}}})
+	content, hclDiags := block.Body.Content(&hcl.BodySchema{Attributes: []hcl.AttributeSchema{{Name: "matching", Required: true}, {Name: "assertions"}, {Name: "span_assertions"}, {Name: "at_least"}, {Name: "at_most"}, {Name: "exactly"}, {Name: "observation_window"}}})
 	diags := diagnostic.FromHCL(hclDiags, diagnostic.CodeSchema)
 	if attr, ok := content.Attributes["matching"]; ok {
 		spans.Matching = attr.Expr
 	}
-	if attr, ok := content.Attributes["assertions"]; ok {
-		assertions, ds := expressionMap(attr.Expr)
+	assertionsAttr, hasAssertions := content.Attributes["assertions"]
+	legacyAssertionsAttr, hasLegacyAssertions := content.Attributes["span_assertions"]
+	if hasAssertions && hasLegacyAssertions {
+		diags = append(diags, diagnostic.Error(diagnostic.CodeSchema, "spans cannot define both assertions and span_assertions", legacyAssertionsAttr.Expr.Range(), "keep assertions; span_assertions is a legacy alias"))
+	}
+	if hasAssertions {
+		assertions, ds := expressionMap(assertionsAttr.Expr)
+		spans.Assertions = assertions
+		diags = append(diags, ds...)
+	} else if hasLegacyAssertions {
+		// span_assertions shipped before the contextual assertions spelling.
+		// Keep accepting it so existing projects remain loadable.
+		assertions, ds := expressionMap(legacyAssertionsAttr.Expr)
 		spans.Assertions = assertions
 		diags = append(diags, ds...)
 	}

@@ -12,6 +12,7 @@ import (
 	tracepb "go.opentelemetry.io/proto/otlp/trace/v1"
 	"google.golang.org/protobuf/proto"
 	"lamplight/internal/model"
+	"math"
 	"net"
 	"net/http"
 	"testing"
@@ -97,5 +98,52 @@ func TestReceiverTranslatesOBIHistogramForPromQL(t *testing.T) {
 	snapshot, err := store.Snapshot(context.Background(), `http_server_request_duration_seconds_count{resource_service_name="shop"}`)
 	if err != nil || len(snapshot.Samples) != 1 || snapshot.Samples[0].Value != 2 {
 		t.Fatalf("snapshot=%#v err=%v", snapshot, err)
+	}
+}
+
+func TestReceiverRejectsInvalidMetricExportAtomically(t *testing.T) {
+	ln, _ := net.Listen("tcp", "127.0.0.1:0")
+	addr := ln.Addr().String()
+	_ = ln.Close()
+	store, err := New(Config{Endpoint: "http://" + addr})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = store.Close() }()
+	if err := store.TestConnection(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+
+	post := func(metrics ...*metricpb.Metric) *http.Response {
+		t.Helper()
+		payload := &metriccollector.ExportMetricsServiceRequest{ResourceMetrics: []*metricpb.ResourceMetrics{{ScopeMetrics: []*metricpb.ScopeMetrics{{Metrics: metrics}}}}}
+		encoded, marshalErr := proto.Marshal(payload)
+		if marshalErr != nil {
+			t.Fatal(marshalErr)
+		}
+		response, postErr := http.Post("http://"+addr+"/v1/metrics", "application/x-protobuf", bytes.NewReader(encoded))
+		if postErr != nil {
+			t.Fatal(postErr)
+		}
+		return response
+	}
+	gauge := func(name string, value float64) *metricpb.Metric {
+		return &metricpb.Metric{Name: name, Data: &metricpb.Metric_Gauge{Gauge: &metricpb.Gauge{DataPoints: []*metricpb.NumberDataPoint{{Value: &metricpb.NumberDataPoint_AsDouble{AsDouble: value}}}}}}
+	}
+
+	response := post(gauge("stable", 3))
+	_ = response.Body.Close()
+	if response.StatusCode != http.StatusOK {
+		t.Fatalf("valid export status=%d", response.StatusCode)
+	}
+	response = post(gauge("stable", 4), gauge("invalid", math.NaN()))
+	_ = response.Body.Close()
+	if response.StatusCode != http.StatusBadRequest {
+		t.Fatalf("invalid export status=%d", response.StatusCode)
+	}
+
+	snapshot, err := store.Snapshot(context.Background(), `stable`)
+	if err != nil || len(snapshot.Samples) != 1 || snapshot.Samples[0].Value != 3 {
+		t.Fatalf("invalid export changed store: snapshot=%#v err=%v", snapshot, err)
 	}
 }
