@@ -14,7 +14,7 @@ import (
 	"lamplight/internal/model"
 )
 
-const defaultInterval = time.Second
+const defaultInterval = 500 * time.Millisecond
 
 // SpanCheck is the normalized, compiled part of one spans block.
 type SpanCheck struct {

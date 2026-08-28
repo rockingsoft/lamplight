@@ -24,6 +24,7 @@ const (
 	methodTriggerExecute           = "trigger.execute"
 	methodDatasourceTestConnection = "datasource.test_connection"
 	methodDatasourceObserve        = "datasource.observe"
+	methodMetricsSnapshot          = "metrics.snapshot"
 )
 
 type Request struct {
@@ -36,6 +37,7 @@ type Request struct {
 	Trace      *model.TestTraceContext `json:"trace,omitempty"`
 	Datasource *datasource.Config      `json:"datasource,omitempty"`
 	TraceID    model.TraceID           `json:"trace_id,omitempty"`
+	Query      string                  `json:"query,omitempty"`
 }
 
 type Response struct {
@@ -43,6 +45,7 @@ type Response struct {
 	ID          uint64                  `json:"id"`
 	Result      *model.Response         `json:"result,omitempty"`
 	Observation *model.TraceObservation `json:"observation,omitempty"`
+	Metrics     *model.MetricSnapshot   `json:"metrics,omitempty"`
 	Error       *RemoteError            `json:"error,omitempty"`
 }
 
@@ -106,6 +109,20 @@ func (c *Client) Observe(ctx context.Context, traceID model.TraceID) (model.Trac
 		return model.TraceObservation{}, errors.New("executor returned no trace observation")
 	}
 	return *response.Observation, nil
+}
+
+func (c *Client) Snapshot(ctx context.Context, query string) (model.MetricSnapshot, error) {
+	if c.datasource == nil {
+		return model.MetricSnapshot{}, errors.New("remote OTLP metrics receiver is not configured")
+	}
+	response, err := c.call(ctx, Request{Method: methodMetricsSnapshot, Datasource: c.datasource, Query: query})
+	if err != nil {
+		return model.MetricSnapshot{}, err
+	}
+	if response.Metrics == nil {
+		return model.MetricSnapshot{}, errors.New("executor returned no metric snapshot")
+	}
+	return *response.Metrics, nil
 }
 
 func (c *Client) call(ctx context.Context, request Request) (Response, error) {
@@ -195,7 +212,7 @@ func handle(ctx context.Context, request Request, response *Response, httpExecut
 		var result model.Response
 		result, err = triggerExecutor.Execute(ctx, *request.Trigger, *request.HTTPClient, request.Trace)
 		response.Result = &result
-	case methodDatasourceTestConnection, methodDatasourceObserve:
+	case methodDatasourceTestConnection, methodDatasourceObserve, methodMetricsSnapshot:
 		if request.Datasource == nil {
 			err = errors.New("datasource configuration is required")
 			break
@@ -209,6 +226,17 @@ func handle(ctx context.Context, request Request, response *Response, httpExecut
 			err = store.TestConnection(ctx)
 			break
 		}
+		if request.Method == methodMetricsSnapshot {
+			metricStore, ok := store.(model.MetricStore)
+			if !ok {
+				err = errors.New("configured datasource does not accept OTLP metrics")
+				break
+			}
+			var snapshot model.MetricSnapshot
+			snapshot, err = metricStore.Snapshot(ctx, request.Query)
+			response.Metrics = &snapshot
+			break
+		}
 		var observation model.TraceObservation
 		observation, err = store.Observe(ctx, request.TraceID)
 		response.Observation = &observation
@@ -216,7 +244,7 @@ func handle(ctx context.Context, request Request, response *Response, httpExecut
 		err = fmt.Errorf("unsupported executor method %q", request.Method)
 	}
 	if err != nil {
-		response.Result, response.Observation = nil, nil
+		response.Result, response.Observation, response.Metrics = nil, nil, nil
 		remote := &RemoteError{Message: err.Error()}
 		var observationError *model.ObservationError
 		if errors.As(err, &observationError) {
@@ -244,3 +272,5 @@ func datasourceFor(config datasource.Config, stores map[string]model.DataStore) 
 }
 
 func timeDuration(value int64) time.Duration { return time.Duration(value) }
+
+var _ model.MetricStore = (*Client)(nil)

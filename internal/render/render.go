@@ -4,6 +4,7 @@ package render
 
 import (
 	"bytes"
+	"encoding/json"
 	"fmt"
 	"io"
 	"strings"
@@ -76,6 +77,20 @@ func (r *TextRenderer) Render(run model.RunResult) ([]byte, error) {
 					output.WriteByte('\n')
 					for _, evidence := range check.SpanEvidence.Assertions {
 						writeEvidence(&output, "        span", r.Redactor, evidence)
+					}
+				}
+				if check.MetricEvidence != nil {
+					fmt.Fprintf(&output, "      metrics rule=%s:%d match_count=%d", check.MetricEvidence.Rule.Kind, check.MetricEvidence.Rule.Value, check.MetricEvidence.MatchCount)
+					if check.MetricEvidence.Reason != "" {
+						fmt.Fprintf(&output, " reason=%s", r.Redactor.RedactString(check.MetricEvidence.Reason))
+					}
+					output.WriteByte('\n')
+					for _, evidence := range check.MetricEvidence.Assertions {
+						writeEvidence(&output, "        metric", r.Redactor, evidence)
+					}
+					for _, metric := range check.MetricEvidence.Metrics {
+						labels, _ := json.Marshal(metric.Labels)
+						fmt.Fprintf(&output, "        sample name=%s type=%s previous=%g value=%g delta=%g labels=%s\n", r.Redactor.RedactString(metric.Name), r.Redactor.RedactString(metric.Type), metric.PreviousValue, metric.Value, metric.Delta, r.Redactor.RedactString(string(labels)))
 					}
 				}
 			}

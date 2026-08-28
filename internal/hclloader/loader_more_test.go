@@ -2,12 +2,15 @@ package hclloader
 
 import (
 	"math/big"
+	"os"
+	"path/filepath"
 	"testing"
 	"time"
 
 	"github.com/hashicorp/hcl/v2"
 	"github.com/hashicorp/hcl/v2/hclparse"
 	"github.com/zclconf/go-cty/cty"
+	"lamplight/internal/config"
 	"lamplight/internal/diagnostic"
 	"lamplight/internal/model"
 )
@@ -63,7 +66,72 @@ func TestParseDatasourceTable(t *testing.T) {
 			if tt.name == "complete" && (got.ObservationWindow != 4*time.Second || got.SettleWindow != time.Second || got.PollingInterval != 250*time.Millisecond || !got.TLSSkipVerify || got.BearerToken == nil || len(got.Headers) != 1) {
 				t.Fatalf("complete datasource=%#v", got)
 			}
+			if tt.name == "jaeger" && got.PollingInterval != 500*time.Millisecond {
+				t.Fatalf("default polling interval=%s", got.PollingInterval)
+			}
 		})
+	}
+}
+
+func TestParsePrometheusMetricsSourceAndCheck(t *testing.T) {
+	source, diags := parseMetricsSource(loaderBlock(t, "metrics \"prometheus\" {\n  endpoint = var.METRICS_URL\n  headers = { \"X-Tenant\" = \"demo\" }\n  observation_window = duration(\"5s\")\n  settle_window = duration(\"1s\")\n  polling_interval = duration(\"250ms\")\n  auth { bearer_token = var.TOKEN }\n}\n", "metrics", []string{"kind"}))
+	if len(diags) != 0 || source == nil || source.Kind != "prometheus" || source.ObservationWindow != 5*time.Second || source.PollingInterval != 250*time.Millisecond || source.BearerToken == nil {
+		t.Fatalf("source=%#v diagnostics=%#v", source, diags)
+	}
+
+	file, hclDiags := hclparse.NewParser().ParseHCL([]byte("test \"metrics\" {\n  step \"create\" {\n    http_request {\n      method = \"POST\"\n      url = \"http://example.test/orders\"\n    }\n    check \"order metric\" {\n      metrics {\n        query = \"sum by (result) (orders_total)\"\n        metric_assertions = { incremented = metric.delta == 1 }\n        exactly = 1\n      }\n    }\n  }\n}\n"), "metrics.wick")
+	if hclDiags.HasErrors() {
+		t.Fatal(hclDiags.Error())
+	}
+	definition := &model.ProjectDefinition{Variables: map[string]model.VariableDefinition{}, Tests: map[string]model.TestDefinition{}}
+	parsed := parseDefinitions(file, definition)
+	check := definition.Tests["metrics"].Steps[0].Checks[0]
+	if len(parsed) != 0 || check.Metrics == nil || check.Metrics.Query == nil || check.Metrics.Rule.Kind != "exactly" || len(check.Metrics.Assertions) != 1 {
+		t.Fatalf("check=%#v diagnostics=%#v", check, parsed)
+	}
+	_, missingQuery := parseMetricsCheck(loaderBlock(t, "metrics { exactly = 1 }", "metrics", nil))
+	if len(missingQuery) == 0 {
+		t.Fatal("metrics check without PromQL query was accepted")
+	}
+}
+
+func TestLoadProjectWithPrometheusMetricCheck(t *testing.T) {
+	directory := t.TempDir()
+	base := filepath.Join(directory, "tests")
+	if err := os.Mkdir(base, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	root := "project { base_dir = \"./tests\" }\nvariable \"METRICS_URL\" { default = \"http://127.0.0.1:9090/metrics\" }\nmetrics \"prometheus_scrape\" { endpoint = var.METRICS_URL }\n"
+	if err := os.WriteFile(filepath.Join(directory, ".lamplight"), []byte(root), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	test := "test \"operation\" {\n  step \"run\" {\n    http_request {\n      method = \"POST\"\n      url = \"http://example.test\"\n    }\n    check \"metric\" {\n      metrics {\n        query = \"operations_total\"\n        metric_assertions = { incremented = metric.delta == 1 }\n        exactly = 1\n      }\n    }\n  }\n}\n"
+	if err := os.WriteFile(filepath.Join(base, "operation.wick"), []byte(test), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	definition, diags := (Loader{}).LoadProject(config.Options{ConfigPath: filepath.Join(directory, ".lamplight")})
+	if len(diags) != 0 || definition.Metrics == nil || definition.Metrics.Kind != "prometheus_scrape" || definition.Tests["operation"].Steps[0].Checks[0].Metrics == nil {
+		t.Fatalf("definition=%#v diagnostics=%#v", definition, diags)
+	}
+}
+
+func TestLoadOTLPDatasourceWithPromQLMetricCheck(t *testing.T) {
+	directory := t.TempDir()
+	base := filepath.Join(directory, "tests")
+	if err := os.Mkdir(base, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	root := "project { base_dir = \"./tests\" }\ndatasource \"otlp\" { endpoint = \"http://127.0.0.1:4318\" }\n"
+	if err := os.WriteFile(filepath.Join(directory, ".lamplight"), []byte(root), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	test := "test \"operation\" {\n  step \"run\" {\n    http_request {\n      method = \"POST\"\n      url = \"http://example.test\"\n    }\n    check \"metric\" {\n      metrics {\n        query = \"http_server_request_duration_seconds_count\"\n        exactly = 1\n      }\n    }\n  }\n}\n"
+	if err := os.WriteFile(filepath.Join(base, "operation.wick"), []byte(test), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	definition, diags := (Loader{}).LoadProject(config.Options{ConfigPath: filepath.Join(directory, ".lamplight")})
+	if len(diags) != 0 || definition.Datasource == nil || definition.Datasource.Kind != "otlp" || definition.Metrics != nil || definition.Tests["operation"].Steps[0].Checks[0].Metrics == nil {
+		t.Fatalf("definition=%#v diagnostics=%#v", definition, diags)
 	}
 }
 

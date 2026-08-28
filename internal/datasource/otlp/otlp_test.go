@@ -4,8 +4,10 @@ import (
 	"bytes"
 	"context"
 	"encoding/hex"
+	metriccollector "go.opentelemetry.io/proto/otlp/collector/metrics/v1"
 	collector "go.opentelemetry.io/proto/otlp/collector/trace/v1"
 	common "go.opentelemetry.io/proto/otlp/common/v1"
+	metricpb "go.opentelemetry.io/proto/otlp/metrics/v1"
 	resource "go.opentelemetry.io/proto/otlp/resource/v1"
 	tracepb "go.opentelemetry.io/proto/otlp/trace/v1"
 	"google.golang.org/protobuf/proto"
@@ -39,5 +41,61 @@ func TestReceiver(t *testing.T) {
 	got, err := s.Observe(context.Background(), model.TraceID(hex.EncodeToString(tid)))
 	if err != nil || len(got.Spans) != 1 || got.Spans[0].Resource["service.name"] != "shop" {
 		t.Fatalf("%#v %v", got, err)
+	}
+}
+
+func TestReceiverIngestsCumulativeAndDeltaMetrics(t *testing.T) {
+	ln, _ := net.Listen("tcp", "127.0.0.1:0")
+	addr := ln.Addr().String()
+	_ = ln.Close()
+	store, err := New(Config{Endpoint: "http://" + addr})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = store.Close() }()
+	if err := store.TestConnection(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	post := func(value int64, temporality metricpb.AggregationTemporality) {
+		t.Helper()
+		payload := &metriccollector.ExportMetricsServiceRequest{ResourceMetrics: []*metricpb.ResourceMetrics{{Resource: &resource.Resource{Attributes: []*common.KeyValue{{Key: "service.name", Value: &common.AnyValue{Value: &common.AnyValue_StringValue{StringValue: "shop"}}}}}, ScopeMetrics: []*metricpb.ScopeMetrics{{Metrics: []*metricpb.Metric{{Name: "orders.created", Data: &metricpb.Metric_Sum{Sum: &metricpb.Sum{IsMonotonic: true, AggregationTemporality: temporality, DataPoints: []*metricpb.NumberDataPoint{{Attributes: []*common.KeyValue{{Key: "result", Value: &common.AnyValue{Value: &common.AnyValue_StringValue{StringValue: "ok"}}}}, Value: &metricpb.NumberDataPoint_AsInt{AsInt: value}}}}}}}}}}}}
+		encoded, _ := proto.Marshal(payload)
+		response, postErr := http.Post("http://"+addr+"/v1/metrics", "application/x-protobuf", bytes.NewReader(encoded))
+		if postErr != nil {
+			t.Fatal(postErr)
+		}
+		_ = response.Body.Close()
+	}
+	post(4, metricpb.AggregationTemporality_AGGREGATION_TEMPORALITY_CUMULATIVE)
+	post(1, metricpb.AggregationTemporality_AGGREGATION_TEMPORALITY_DELTA)
+	snapshot, err := store.Snapshot(context.Background(), `orders_created_total{result="ok",resource_service_name="shop"}`)
+	if err != nil || len(snapshot.Samples) != 1 || snapshot.Samples[0].Value != 5 || snapshot.Samples[0].Labels["resource_service_name"] != "shop" {
+		t.Fatalf("snapshot=%#v err=%v", snapshot, err)
+	}
+}
+
+func TestReceiverTranslatesOBIHistogramForPromQL(t *testing.T) {
+	ln, _ := net.Listen("tcp", "127.0.0.1:0")
+	addr := ln.Addr().String()
+	_ = ln.Close()
+	store, err := New(Config{Endpoint: "http://" + addr})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = store.Close() }()
+	if err := store.TestConnection(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	sum := 0.3
+	payload := &metriccollector.ExportMetricsServiceRequest{ResourceMetrics: []*metricpb.ResourceMetrics{{Resource: &resource.Resource{Attributes: []*common.KeyValue{{Key: "service.name", Value: &common.AnyValue{Value: &common.AnyValue_StringValue{StringValue: "shop"}}}}}, ScopeMetrics: []*metricpb.ScopeMetrics{{Metrics: []*metricpb.Metric{{Name: "http.server.request.duration", Unit: "s", Data: &metricpb.Metric_Histogram{Histogram: &metricpb.Histogram{AggregationTemporality: metricpb.AggregationTemporality_AGGREGATION_TEMPORALITY_CUMULATIVE, DataPoints: []*metricpb.HistogramDataPoint{{Count: 2, Sum: &sum, ExplicitBounds: []float64{0.1}, BucketCounts: []uint64{1, 1}}}}}}}}}}}}
+	encoded, _ := proto.Marshal(payload)
+	response, err := http.Post("http://"+addr+"/v1/metrics", "application/x-protobuf", bytes.NewReader(encoded))
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = response.Body.Close()
+	snapshot, err := store.Snapshot(context.Background(), `http_server_request_duration_seconds_count{resource_service_name="shop"}`)
+	if err != nil || len(snapshot.Samples) != 1 || snapshot.Samples[0].Value != 2 {
+		t.Fatalf("snapshot=%#v err=%v", snapshot, err)
 	}
 }

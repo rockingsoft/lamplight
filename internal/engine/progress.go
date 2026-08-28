@@ -20,6 +20,7 @@ type ProgressEvent struct {
 	ObservationWindow time.Duration
 	Attempt           int
 	SpanCount         int
+	MetricCount       int
 	Found             bool
 	Complete          bool
 	RetryError        string
@@ -49,6 +50,8 @@ const (
 	ProgressTriggerCompleted    ProgressEventKind = "trigger_completed"
 	ProgressTracePolling        ProgressEventKind = "trace_polling"
 	ProgressTraceObserved       ProgressEventKind = "trace_observed"
+	ProgressMetricPolling       ProgressEventKind = "metric_polling"
+	ProgressMetricObserved      ProgressEventKind = "metric_observed"
 )
 
 type ProgressFunc func(ProgressEvent)

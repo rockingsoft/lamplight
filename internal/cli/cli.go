@@ -33,6 +33,7 @@ import (
 	"lamplight/internal/initcmd"
 	"lamplight/internal/instrumentation"
 	"lamplight/internal/mcpserver"
+	metricsprometheus "lamplight/internal/metricssource/prometheus"
 	"lamplight/internal/model"
 	"lamplight/internal/render"
 	"lamplight/internal/result"
@@ -480,6 +481,36 @@ func run(ctx context.Context, args []string, streams IO) int {
 		}
 		datasourceConfig = &resolved
 	}
+	if def.Metrics != nil {
+		endpoint, metricErr := evalString(def.Metrics.Endpoint, values)
+		if metricErr != nil {
+			writeLine(streams.Err, "error: metrics endpoint:", metricErr)
+			return 1
+		}
+		headers := map[string]string{}
+		for name, expression := range def.Metrics.Headers {
+			headers[name], metricErr = evalString(expression, values)
+			if metricErr != nil {
+				writeLine(streams.Err, "error: metrics header:", name, metricErr)
+				return 1
+			}
+		}
+		token := ""
+		if def.Metrics.BearerToken != nil {
+			token, metricErr = evalString(def.Metrics.BearerToken, values)
+			if metricErr != nil {
+				writeLine(streams.Err, "error: metrics auth:", metricErr)
+				return 1
+			}
+		}
+		store, metricErr := metricsprometheus.New(metricsprometheus.Config{Endpoint: endpoint, Headers: headers, BearerToken: token, TLSSkipVerify: def.Metrics.TLSSkipVerify, Timeout: runtimeProject.HTTPClient.Timeout, QueryAPI: def.Metrics.Kind == "prometheus", ScrapeInterval: def.Metrics.PollingInterval})
+		if metricErr != nil {
+			writeLine(streams.Err, "error: metrics:", metricErr)
+			return 1
+		}
+		defer func() { _ = store.Close() }()
+		runtimeProject.Metrics = store
+	}
 	redactor := result.NewRedactor(sensitiveStrings(values)...)
 	format := render.Format(def.Output)
 	if *output != "" {
@@ -519,6 +550,14 @@ func run(ctx context.Context, args []string, streams IO) int {
 				return 1
 			}
 			runtimeProject.Datasource = store
+			if def.Datasource.Kind == "otlp" {
+				metricStore, ok := store.(model.MetricStore)
+				if !ok {
+					writeLine(streams.Err, "error: configured OTLP datasource does not accept metrics")
+					return 1
+				}
+				runtimeProject.Metrics = metricStore
+			}
 			if closer, ok := store.(io.Closer); ok {
 				defer func() { _ = closer.Close() }()
 			}
@@ -541,6 +580,9 @@ func run(ctx context.Context, args []string, streams IO) int {
 		triggers = executorproto.TriggerClient{Client: client}
 		if datasourceConfig != nil {
 			runtimeProject.Datasource = client
+		}
+		if datasourceConfig != nil && datasourceConfig.Kind == "otlp" {
+			runtimeProject.Metrics = client
 		}
 	}
 	eng := engine.Engine{HTTP: httpExecutor, Triggers: triggers, TraceFactory: tracecontext.NewFactory(), FailFast: *failFast, Progress: progressFunc}
@@ -726,6 +768,12 @@ func collectExpressions(def *model.ProjectDefinition, tests []model.TestDefiniti
 			out = append(out, e)
 		}
 	}
+	if source := def.Metrics; source != nil {
+		out = append(out, source.Endpoint, source.BearerToken)
+		for _, expression := range source.Headers {
+			out = append(out, expression)
+		}
+	}
 	for _, t := range tests {
 		for _, e := range t.Outputs {
 			out = append(out, e)
@@ -748,6 +796,12 @@ func collectExpressions(def *model.ProjectDefinition, tests []model.TestDefiniti
 				if c.Spans != nil {
 					out = append(out, c.Spans.Matching)
 					for _, e := range c.Spans.Assertions {
+						out = append(out, e)
+					}
+				}
+				if c.Metrics != nil {
+					out = append(out, c.Metrics.Query)
+					for _, e := range c.Metrics.Assertions {
 						out = append(out, e)
 					}
 				}

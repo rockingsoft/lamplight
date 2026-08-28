@@ -73,6 +73,17 @@ type DatasourceDefinition struct {
 	PollingInterval   time.Duration
 }
 
+type MetricsDefinition struct {
+	Kind              string
+	Endpoint          hcl.Expression
+	Headers           map[string]hcl.Expression
+	BearerToken       hcl.Expression
+	TLSSkipVerify     bool
+	ObservationWindow time.Duration
+	SettleWindow      time.Duration
+	PollingInterval   time.Duration
+}
+
 type InstrumentationDefinition struct {
 	Kind               string
 	Image              string
@@ -148,10 +159,18 @@ type SpanCheckDefinition struct {
 	ObservationWindow time.Duration
 }
 
+type MetricCheckDefinition struct {
+	Query             hcl.Expression
+	Assertions        map[string]hcl.Expression
+	Rule              QuantityRule
+	ObservationWindow time.Duration
+}
+
 type CheckDefinition struct {
 	Name     string
 	Response map[string]hcl.Expression
 	Spans    *SpanCheckDefinition
+	Metrics  *MetricCheckDefinition
 	Range    SourceRange
 }
 
@@ -180,6 +199,7 @@ type ProjectDefinition struct {
 	HTTPClient      HTTPClientConfig
 	HTTPProxy       hcl.Expression
 	Datasource      *DatasourceDefinition
+	Metrics         *MetricsDefinition
 	Instrumentation *InstrumentationDefinition
 	Variables       map[string]VariableDefinition
 	Tests           map[string]TestDefinition
@@ -217,6 +237,7 @@ type Project struct {
 	Variables  map[string]SensitiveValue
 	Tests      []TestDefinition
 	Datasource DataStore
+	Metrics    MetricStore
 	HTTPClient HTTPClientConfig
 }
 
@@ -256,6 +277,30 @@ type TraceObservation struct {
 	Fingerprint string
 }
 
+type MetricSample struct {
+	Name       string            `json:"name"`
+	Type       string            `json:"type,omitempty"`
+	Value      float64           `json:"value"`
+	Labels     map[string]string `json:"labels,omitempty"`
+	Attributes map[string]any    `json:"attributes,omitempty"`
+	Resource   map[string]any    `json:"resource,omitempty"`
+}
+
+type MetricPoint struct {
+	Name          string            `json:"name"`
+	Type          string            `json:"type,omitempty"`
+	Value         float64           `json:"value"`
+	PreviousValue float64           `json:"previous_value"`
+	Delta         float64           `json:"delta"`
+	Labels        map[string]string `json:"labels,omitempty"`
+	Attributes    map[string]any    `json:"attributes,omitempty"`
+	Resource      map[string]any    `json:"resource,omitempty"`
+}
+
+type MetricSnapshot struct {
+	Samples []MetricSample `json:"samples"`
+}
+
 type ObservationError struct {
 	Err        error
 	Retriable  bool
@@ -268,6 +313,10 @@ func (e *ObservationError) Unwrap() error { return e.Err }
 type DataStore interface {
 	TestConnection(context.Context) error
 	Observe(context.Context, TraceID) (TraceObservation, error)
+}
+
+type MetricStore interface {
+	Snapshot(context.Context, string) (MetricSnapshot, error)
 }
 
 type TraceContextFactory interface {
@@ -303,11 +352,20 @@ type SpanEvidence struct {
 	Assertions []AssertionEvidence `json:"assertions,omitempty"`
 }
 
+type MetricEvidence struct {
+	Rule       QuantityRule        `json:"rule"`
+	MatchCount int                 `json:"match_count"`
+	Reason     string              `json:"reason,omitempty"`
+	Assertions []AssertionEvidence `json:"assertions,omitempty"`
+	Metrics    []MetricPoint       `json:"metrics,omitempty"`
+}
+
 type CheckResult struct {
 	Name             string              `json:"name"`
 	Status           Status              `json:"status"`
 	ResponseEvidence []AssertionEvidence `json:"response_evidence,omitempty"`
 	SpanEvidence     *SpanEvidence       `json:"span_evidence,omitempty"`
+	MetricEvidence   *MetricEvidence     `json:"metric_evidence,omitempty"`
 	Reason           string              `json:"reason,omitempty"`
 }
 

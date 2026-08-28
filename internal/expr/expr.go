@@ -149,6 +149,23 @@ func spanType(attributes map[string]any) string {
 
 func ResourceValue(resource map[string]any) cty.Value { return valueFromAny(resource) }
 
+func MetricValue(metric model.MetricPoint) cty.Value {
+	labels := make(map[string]any, len(metric.Labels))
+	for name, value := range metric.Labels {
+		labels[name] = value
+	}
+	return cty.ObjectVal(map[string]cty.Value{
+		"name":           cty.StringVal(metric.Name),
+		"type":           cty.StringVal(metric.Type),
+		"value":          cty.NumberFloatVal(metric.Value),
+		"previous_value": cty.NumberFloatVal(metric.PreviousValue),
+		"delta":          cty.NumberFloatVal(metric.Delta),
+		"labels":         valueFromAny(labels),
+		"attributes":     valueFromAny(metric.Attributes),
+		"resource":       valueFromAny(metric.Resource),
+	})
+}
+
 func ResponseContext(response model.Response, variables map[string]model.SensitiveValue, steps cty.Value) *hcl.EvalContext {
 	return context(map[string]cty.Value{"response": ResponseValue(response), "var": Variables(variables), "steps": normalizeSteps(steps)})
 }
@@ -159,6 +176,10 @@ func OutputContext(response model.Response, variables map[string]model.Sensitive
 
 func SpanContext(span model.Span, response model.Response, variables map[string]model.SensitiveValue, steps cty.Value) *hcl.EvalContext {
 	return context(map[string]cty.Value{"span": SpanValue(span), "resource": ResourceValue(span.Resource), "response": ResponseValue(response), "var": Variables(variables), "steps": normalizeSteps(steps)})
+}
+
+func MetricContext(metric model.MetricPoint, response model.Response, variables map[string]model.SensitiveValue, steps cty.Value) *hcl.EvalContext {
+	return context(map[string]cty.Value{"metric": MetricValue(metric), "response": ResponseValue(response), "var": Variables(variables), "steps": normalizeSteps(steps)})
 }
 
 func context(values map[string]cty.Value) *hcl.EvalContext {
