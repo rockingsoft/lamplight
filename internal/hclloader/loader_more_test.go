@@ -79,7 +79,7 @@ func TestParsePrometheusMetricsSourceAndCheck(t *testing.T) {
 		t.Fatalf("source=%#v diagnostics=%#v", source, diags)
 	}
 
-	file, hclDiags := hclparse.NewParser().ParseHCL([]byte("test \"metrics\" {\n  step \"create\" {\n    http_request {\n      method = \"POST\"\n      url = \"http://example.test/orders\"\n    }\n    check \"order metric\" {\n      metrics {\n        query = \"sum by (result) (orders_total)\"\n        metric_assertions = { incremented = metric.delta == 1 }\n        exactly = 1\n      }\n    }\n  }\n}\n"), "metrics.wick")
+	file, hclDiags := hclparse.NewParser().ParseHCL([]byte("test \"metrics\" {\n  step \"create\" {\n    http_request {\n      method = \"POST\"\n      url = \"http://example.test/orders\"\n    }\n    check \"order metric\" {\n      metrics {\n        query = \"sum by (result) (orders_total)\"\n        assertions = { incremented = metric.delta == 1 }\n        exactly = 1\n      }\n    }\n  }\n}\n"), "metrics.wick")
 	if hclDiags.HasErrors() {
 		t.Fatal(hclDiags.Error())
 	}
@@ -95,6 +95,40 @@ func TestParsePrometheusMetricsSourceAndCheck(t *testing.T) {
 	}
 }
 
+func TestAssertionsAreScopedByCheckBlock(t *testing.T) {
+	metricCheck, metricDiags := parseMetricsCheck(loaderBlock(t, `metrics {
+  query = "orders_total"
+  assertions = { incremented = metric.delta == 1 }
+  exactly = 1
+}`, "metrics", nil))
+	if len(metricDiags) != 0 || metricCheck == nil || len(metricCheck.Assertions) != 1 {
+		t.Fatalf("metric check=%#v diagnostics=%#v", metricCheck, metricDiags)
+	}
+
+	spanCheck, spanDiags := parseSpans(loaderBlock(t, `spans {
+  matching = span.name == "create order"
+  assertions = { succeeded = span.status != "error" }
+  exactly = 1
+}`, "spans", nil))
+	if len(spanDiags) != 0 || spanCheck == nil || len(spanCheck.Assertions) != 1 {
+		t.Fatalf("span check=%#v diagnostics=%#v", spanCheck, spanDiags)
+	}
+
+	_, legacyMetricDiags := parseMetricsCheck(loaderBlock(t, `metrics {
+  query = "orders_total"
+  metric_assertions = { incremented = metric.delta == 1 }
+  exactly = 1
+}`, "metrics", nil))
+	_, legacySpanDiags := parseSpans(loaderBlock(t, `spans {
+  matching = true
+  span_assertions = { succeeded = true }
+  exactly = 1
+}`, "spans", nil))
+	if len(legacyMetricDiags) == 0 || len(legacySpanDiags) == 0 {
+		t.Fatalf("legacy diagnostics: metrics=%#v spans=%#v", legacyMetricDiags, legacySpanDiags)
+	}
+}
+
 func TestLoadProjectWithPrometheusMetricCheck(t *testing.T) {
 	directory := t.TempDir()
 	base := filepath.Join(directory, "tests")
@@ -105,7 +139,7 @@ func TestLoadProjectWithPrometheusMetricCheck(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(directory, ".lamplight"), []byte(root), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	test := "test \"operation\" {\n  step \"run\" {\n    http_request {\n      method = \"POST\"\n      url = \"http://example.test\"\n    }\n    check \"metric\" {\n      metrics {\n        query = \"operations_total\"\n        metric_assertions = { incremented = metric.delta == 1 }\n        exactly = 1\n      }\n    }\n  }\n}\n"
+	test := "test \"operation\" {\n  step \"run\" {\n    http_request {\n      method = \"POST\"\n      url = \"http://example.test\"\n    }\n    check \"metric\" {\n      metrics {\n        query = \"operations_total\"\n        assertions = { incremented = metric.delta == 1 }\n        exactly = 1\n      }\n    }\n  }\n}\n"
 	if err := os.WriteFile(filepath.Join(base, "operation.wick"), []byte(test), 0o600); err != nil {
 		t.Fatal(err)
 	}
@@ -141,7 +175,7 @@ func TestParseDefinitionsTable(t *testing.T) {
 		source    string
 		wantDiags bool
 	}{
-		{name: "complete", source: "variable \"PORT\" {\n  type = int\n  default = 80\n  sensitive = false\n}\nvariable \"WAIT\" {\n  type = duration\n  default = duration(\"1s\")\n}\ntest \"demo\" {\n  tags = [\"z\", \"a\"]\n  outputs = { result = response.body }\n  step \"first\" {\n    http_request {\n      method = \"POST\"\n      url = \"http://example.test\"\n      headers = { X = \"one\" }\n      body = \"body\"\n    }\n    outputs = { id = response.json.id }\n    check \"response\" { response = { ok = response.status_code == 200 } }\n    check \"spans\" {\n      spans {\n        matching = \"span.name == \\\"demo\\\"\"\n        span_assertions = { name = span.name == \"demo\" }\n        exactly = 1\n        observation_window = duration(\"1s\")\n      }\n    }\n  }\n}\n", wantDiags: false},
+		{name: "complete", source: "variable \"PORT\" {\n  type = int\n  default = 80\n  sensitive = false\n}\nvariable \"WAIT\" {\n  type = duration\n  default = duration(\"1s\")\n}\ntest \"demo\" {\n  tags = [\"z\", \"a\"]\n  outputs = { result = response.body }\n  step \"first\" {\n    http_request {\n      method = \"POST\"\n      url = \"http://example.test\"\n      headers = { X = \"one\" }\n      body = \"body\"\n    }\n    outputs = { id = response.json.id }\n    check \"response\" { response = { ok = response.status_code == 200 } }\n    check \"spans\" {\n      spans {\n        matching = \"span.name == \\\"demo\\\"\"\n        assertions = { name = span.name == \"demo\" }\n        exactly = 1\n        observation_window = duration(\"1s\")\n      }\n    }\n  }\n}\n", wantDiags: false},
 		{name: "invalid definitions", source: "variable \"bad-name\" {\n  type = bool\n  default = 1\n  sensitive = \"yes\"\n}\ntest \"empty\" {}\n", wantDiags: true},
 		{name: "invalid checks", source: "test \"bad\" {\n  step \"s\" {\n    check \"empty\" { response = {} }\n    check \"quantity\" {\n      spans {\n        matching = \"x\"\n        at_least = -1\n        at_most = 1\n      }\n    }\n  }\n}\n", wantDiags: true},
 	}

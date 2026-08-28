@@ -669,7 +669,7 @@ spans {
     span.attributes["http.status_code"] == 201
   )
 
-  span_assertions = {
+  assertions = {
     "fast enough" = span.duration < duration("500ms")
   }
 
@@ -683,7 +683,7 @@ Properties:
 | Property | Required | Type | Default | Description |
 | --- | --- | --- | --- | --- |
 | `matching` | yes | boolean expression | — | Evaluated once per observed span. |
-| `span_assertions` | no | map of boolean expressions | `{}` | Assertions applied to every span selected by `matching`; every assertion must pass for every selected span. |
+| `assertions` | no | map of boolean expressions | `{}` | Assertions applied to every span selected by `matching`; every assertion must pass for every selected span. |
 | `at_least` | exactly one quantity rule | non-negative literal integer | — | Minimum number of spans selected by `matching`. |
 | `at_most` | exactly one quantity rule | non-negative literal integer | — | Maximum number of spans selected by `matching`. |
 | `exactly` | exactly one quantity rule | non-negative literal integer | — | Exact final number of spans selected by `matching`. |
@@ -714,7 +714,7 @@ check "order operation emitted metrics" {
       )
     PROMQL
 
-    metric_assertions = {
+    assertions = {
       "increments exactly once" = metric.delta == 1
     }
 
@@ -726,7 +726,7 @@ check "order operation emitted metrics" {
 
 `query` is a required string expression evaluated before the trigger using
 `var` and prior `steps`. It is the only metric-selection mechanism for remote
-Prometheus, direct scrapes, and OTLP pushes. `metric_assertions` applies to
+Prometheus, direct scrapes, and OTLP pushes. `assertions` applies to
 every series returned by PromQL. Exactly one of
 `at_least`, `at_most`, or `exactly` is required and counts selected time
 series, not samples or increments. `observation_window` overrides the source
@@ -764,8 +764,8 @@ Only the roots listed for a context are available.
 | `http_request` properties | `var`, `steps` |
 | step `outputs` | `response`, `var`, `steps` |
 | check `response` | `response`, `var`, `steps` |
-| `spans.matching`, `spans.span_assertions` | `span`, `resource`, `response`, `var`, `steps` |
-| `metrics.metric_assertions` | `metric`, `response`, `var`, `steps` |
+| `spans.matching`, `spans.assertions` | `span`, `resource`, `response`, `var`, `steps` |
+| `metrics.assertions` | `metric`, `response`, `var`, `steps` |
 | test `outputs` | `var`, `steps` |
 
 ### 10.1 `var`
@@ -1009,7 +1009,7 @@ count rules. Generated variables have no default and are supplied with
 The command refuses to overwrite `.wick` files unless `--force` is supplied.
 It rejects unsupported constructs inside importable tests instead of silently
 discarding them. Tracetest's “assert every selected span” behavior maps directly
-to `span_assertions`: the quantity rule counts every span selected by `matching`,
+to `assertions`: the quantity rule counts every span selected by `matching`,
 and every assertion must pass for every selected span.
 
 ## 14. Execution and failure semantics

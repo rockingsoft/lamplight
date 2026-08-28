@@ -46,7 +46,7 @@ func TestSourceWrapsLongNestedFunctionCall(t *testing.T) {
     check "message" {
       spans {
         matching = true
-        span_assertions = {
+        assertions = {
           "assertion 1" = tostring(jsondecode(span.attributes["messaging.payload"]).id) == "143"
         }
       }

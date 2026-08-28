@@ -645,12 +645,12 @@ func parseCheck(block *hcl.Block) (model.CheckDefinition, []model.Diagnostic) {
 
 func parseMetricsCheck(block *hcl.Block) (*model.MetricCheckDefinition, []model.Diagnostic) {
 	result := &model.MetricCheckDefinition{Assertions: map[string]hcl.Expression{}}
-	content, hclDiags := block.Body.Content(&hcl.BodySchema{Attributes: []hcl.AttributeSchema{{Name: "query", Required: true}, {Name: "metric_assertions"}, {Name: "at_least"}, {Name: "at_most"}, {Name: "exactly"}, {Name: "observation_window"}}})
+	content, hclDiags := block.Body.Content(&hcl.BodySchema{Attributes: []hcl.AttributeSchema{{Name: "query", Required: true}, {Name: "assertions"}, {Name: "at_least"}, {Name: "at_most"}, {Name: "exactly"}, {Name: "observation_window"}}})
 	diags := diagnostic.FromHCL(hclDiags, diagnostic.CodeSchema)
 	if attr, ok := content.Attributes["query"]; ok {
 		result.Query = attr.Expr
 	}
-	if attr, ok := content.Attributes["metric_assertions"]; ok {
+	if attr, ok := content.Attributes["assertions"]; ok {
 		var ds []model.Diagnostic
 		result.Assertions, ds = expressionMap(attr.Expr)
 		diags = append(diags, ds...)
@@ -685,12 +685,12 @@ func parseMetricsCheck(block *hcl.Block) (*model.MetricCheckDefinition, []model.
 
 func parseSpans(block *hcl.Block) (*model.SpanCheckDefinition, []model.Diagnostic) {
 	spans := &model.SpanCheckDefinition{Assertions: map[string]hcl.Expression{}}
-	content, hclDiags := block.Body.Content(&hcl.BodySchema{Attributes: []hcl.AttributeSchema{{Name: "matching", Required: true}, {Name: "span_assertions"}, {Name: "at_least"}, {Name: "at_most"}, {Name: "exactly"}, {Name: "observation_window"}}})
+	content, hclDiags := block.Body.Content(&hcl.BodySchema{Attributes: []hcl.AttributeSchema{{Name: "matching", Required: true}, {Name: "assertions"}, {Name: "at_least"}, {Name: "at_most"}, {Name: "exactly"}, {Name: "observation_window"}}})
 	diags := diagnostic.FromHCL(hclDiags, diagnostic.CodeSchema)
 	if attr, ok := content.Attributes["matching"]; ok {
 		spans.Matching = attr.Expr
 	}
-	if attr, ok := content.Attributes["span_assertions"]; ok {
+	if attr, ok := content.Attributes["assertions"]; ok {
 		assertions, ds := expressionMap(attr.Expr)
 		spans.Assertions = assertions
 		diags = append(diags, ds...)

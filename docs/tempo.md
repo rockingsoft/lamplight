@@ -167,7 +167,7 @@ test "traced_healthcheck" {
 }
 ```
 
-`matching` and every `span_assertions` expression are applied to each span. A
+`matching` and every `assertions` expression are applied to each span. A
 span contributes to the count only when all predicates return true. Resource
 attributes are accessed directly through `resource`, not through
 `resource.attributes`.
@@ -276,7 +276,7 @@ lamplight run traced_healthcheck --output json --keep-artifacts
 - Keep artifacts and inspect normalized span evidence.
 - Use the exact attribute types: numeric values are not strings.
 - Access resource attributes as `resource["key"]`.
-- Remember that `matching` and all `span_assertions` must pass on the same span.
+- Remember that `matching` and all `assertions` must pass on the same span.
 - Start with a broad predicate such as `span.name != ""`, then add conditions
   one at a time.
 

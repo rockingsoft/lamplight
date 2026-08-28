@@ -254,7 +254,7 @@ func convertSpec(old spec, index int) (string, []string, error) {
 		out.WriteString("      spans {\n")
 		fmt.Fprintf(&out, "        matching = %s\n", selector)
 		if len(spanAssertions) > 0 {
-			out.WriteString("        span_assertions = {\n")
+			out.WriteString("        assertions = {\n")
 			writeExpressionMap(&out, spanAssertions, 10)
 			out.WriteString("        }\n")
 		}
