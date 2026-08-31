@@ -295,9 +295,10 @@ export downstream spans with the same trace ID. A tracing backend cannot
 correlate a workflow if the application breaks context propagation.
 
 Lamplight supports ordered HTTP and backend triggers, including executable
-local k6 scripts, direct trace-by-ID integrations, and local OTLP ingestion
+local or distributed Cloud Run k6 scripts, direct trace-by-ID integrations, and local OTLP ingestion
 adapters, as well as local, Docker Compose, and Kubernetes execution targets.
-Executable k6 triggers require `k6` in `PATH`. See the
+Local k6 triggers require `k6` in `PATH`; Cloud Run execution uses Application
+Default Credentials and a pre-provisioned Job and private staging bucket. See the
 [DSL and CLI reference](docs/reference.md) for the current trigger, datasource,
 target, expression, and configuration contracts.
 

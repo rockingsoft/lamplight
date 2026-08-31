@@ -16,9 +16,11 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/IBM/sarama"
 	"lamplight/internal/debuglog"
+	"lamplight/internal/k6cloudrun"
 	"lamplight/internal/model"
 )
 
@@ -28,6 +30,11 @@ type Executor struct {
 	HTTP     model.HTTPExecutor
 	command  commandFunc
 	lookPath func(string) (string, error)
+	cloudRun cloudRunExecutor
+}
+
+type cloudRunExecutor interface {
+	Run(context.Context, k6cloudrun.Request) (k6cloudrun.Result, error)
 }
 
 func New(http model.HTTPExecutor) *Executor {
@@ -74,6 +81,12 @@ func (e *Executor) executeK6(ctx context.Context, request model.TriggerRequest, 
 	script := stringAttr(request, "script")
 	if script == "" {
 		return model.Response{}, errors.New("k6.script is required")
+	}
+	if executor, ok := request.Attributes["executor"].(map[string]any); ok {
+		if stringAttr(model.TriggerRequest{Attributes: executor}, "kind") != "cloud_run" {
+			return model.Response{}, fmt.Errorf("unsupported k6 executor %q", executor["kind"])
+		}
+		return e.executeK6CloudRun(ctx, request, cfg, trace, executor)
 	}
 	lookPath := e.lookPath
 	if lookPath == nil {
@@ -150,6 +163,144 @@ func (e *Executor) executeK6(ctx context.Context, request model.TriggerRequest, 
 		return response, fmt.Errorf("k6 exited with code %d: %s", exitCode, message)
 	}
 	return response, nil
+}
+
+func (e *Executor) executeK6CloudRun(ctx context.Context, request model.TriggerRequest, cfg model.HTTPClientConfig, trace *model.TestTraceContext, executor map[string]any) (model.Response, error) {
+	arguments, err := k6Arguments(request.Attributes["arguments"])
+	if err != nil {
+		return model.Response{}, err
+	}
+	tasks, err := positiveInt(executor["tasks"], "cloud_run.tasks")
+	if err != nil {
+		return model.Response{}, err
+	}
+	timeout, err := durationAttr(executor["timeout"], 20*time.Minute, "cloud_run.timeout")
+	if err != nil {
+		return model.Response{}, err
+	}
+	startDelay, err := durationAttr(executor["start_delay"], 15*time.Second, "cloud_run.start_delay")
+	if err != nil {
+		return model.Response{}, err
+	}
+	files := []string{}
+	if raw, exists := request.Attributes["files"]; exists {
+		values, ok := raw.([]any)
+		if !ok {
+			return model.Response{}, errors.New("k6.files must be a list")
+		}
+		for _, value := range values {
+			file, ok := value.(string)
+			if !ok {
+				return model.Response{}, errors.New("k6.files entries must be strings")
+			}
+			files = append(files, file)
+		}
+	}
+	environment := stringMap(request.Attributes["env"])
+	jobEnvironment := []string{}
+	if raw, exists := executor["job_env"]; exists {
+		values, ok := raw.([]any)
+		if !ok {
+			return model.Response{}, errors.New("cloud_run.job_env must be a list")
+		}
+		seen := map[string]bool{}
+		for _, value := range values {
+			name, ok := value.(string)
+			if !ok || !validK6EnvironmentName(name) {
+				return model.Response{}, errors.New("cloud_run.job_env entries must be valid environment names")
+			}
+			if seen[name] {
+				return model.Response{}, fmt.Errorf("cloud_run.job_env contains duplicate key %q", name)
+			}
+			seen[name] = true
+			if _, exists := environment[name]; !exists {
+				return model.Response{}, fmt.Errorf("cloud_run.job_env key %q is not present in k6.env", name)
+			}
+			delete(environment, name)
+			jobEnvironment = append(jobEnvironment, name)
+		}
+	}
+	limit := cfg.MaxResponseBodyBytes
+	if limit <= 0 {
+		limit = defaultK6OutputLimit
+	}
+	runner := e.cloudRun
+	if runner == nil {
+		runner, err = k6cloudrun.New(ctx)
+		if err != nil {
+			return model.Response{}, err
+		}
+	}
+	cloudRequest := k6cloudrun.Request{
+		Project: stringValue(executor["project"]), Region: stringValue(executor["region"]), Job: stringValue(executor["job"]), Bucket: stringValue(executor["bucket"]),
+		Tasks: tasks, Timeout: timeout, StartDelay: startDelay, Script: stringAttr(request, "script"), BundleRoot: stringAttr(request, "bundle_root"), Files: files,
+		Environment: environment, JobEnvironment: jobEnvironment, Arguments: arguments, OutputLimit: limit,
+	}
+	if trace != nil {
+		cloudRequest.TraceParent, cloudRequest.TraceState = trace.TraceParent(), trace.TraceState
+	}
+	result, runErr := runner.Run(ctx, cloudRequest)
+	shards := make([]any, 0, len(result.Shards))
+	statusCode := 0
+	var body strings.Builder
+	for _, shard := range result.Shards {
+		shards = append(shards, map[string]any{"index": shard.Index, "exit_code": shard.ExitCode, "stdout": shard.Stdout, "stderr": shard.Stderr, "summary": shard.Summary})
+		if shard.ExitCode > statusCode {
+			statusCode = shard.ExitCode
+		}
+		body.WriteString(shard.Stdout)
+	}
+	response := model.Response{StatusCode: statusCode, Headers: map[string][]string{}, Body: body.String(), JSON: map[string]any{"exit_code": statusCode, "executor": "cloud_run", "execution": result.Execution, "log_uri": result.LogURI, "shards": shards}}
+	if runErr != nil {
+		return response, runErr
+	}
+	return response, nil
+}
+
+func validK6EnvironmentName(name string) bool {
+	if name == "" || !((name[0] >= 'A' && name[0] <= 'Z') || (name[0] >= 'a' && name[0] <= 'z') || name[0] == '_') {
+		return false
+	}
+	for _, character := range name[1:] {
+		if !((character >= 'A' && character <= 'Z') || (character >= 'a' && character <= 'z') || (character >= '0' && character <= '9') || character == '_') {
+			return false
+		}
+	}
+	return true
+}
+
+func positiveInt(value any, name string) (int, error) {
+	number, ok := value.(float64)
+	if !ok || number < 1 || number != float64(int(number)) {
+		return 0, fmt.Errorf("%s must be a positive integer", name)
+	}
+	return int(number), nil
+}
+
+func durationAttr(value any, fallback time.Duration, name string) (time.Duration, error) {
+	if value == nil {
+		return fallback, nil
+	}
+	switch typed := value.(type) {
+	case string:
+		parsed, err := time.ParseDuration(typed)
+		if err != nil || parsed < 0 {
+			return 0, fmt.Errorf("%s must be a valid non-negative duration", name)
+		}
+		return parsed, nil
+	case float64:
+		if typed < 0 {
+			return 0, fmt.Errorf("%s must be a valid non-negative duration", name)
+		}
+		return time.Duration(typed), nil
+	default:
+		return 0, fmt.Errorf("%s must be a duration string", name)
+	}
+}
+
+func stringValue(value any) string {
+	text, _ := value.(string)
+	return text
 }
 
 func k6Arguments(value any) ([]string, error) {

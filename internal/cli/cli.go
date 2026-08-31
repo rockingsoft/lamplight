@@ -786,6 +786,11 @@ func collectExpressions(def *model.ProjectDefinition, tests []model.TestDefiniti
 			for _, e := range s.Trigger.Attributes {
 				out = append(out, e)
 			}
+			if s.Trigger.Executor != nil {
+				for _, e := range s.Trigger.Executor.Attributes {
+					out = append(out, e)
+				}
+			}
 			for _, e := range s.Outputs {
 				out = append(out, e)
 			}

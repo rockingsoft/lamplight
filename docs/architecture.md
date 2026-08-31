@@ -111,6 +111,7 @@ completion, stability, an exceeded bound, or the observation deadline. See
 | Path | Responsibility |
 | --- | --- |
 | `cmd/lamplight` | Process entry point, signal-aware root context, and exit code. |
+| `cmd/lamplight-k6-cloud-run` | Cloud Run task entry point for distributed k6 shards. |
 | `internal/cli` | Command parsing, dependency assembly, selection, rendering, and top-level error handling. |
 | `internal/config` | Configuration path resolution and project defaults. |
 | `internal/discovery` | Deterministic recursive discovery of Lamplight DSL files. |
@@ -121,6 +122,7 @@ completion, stability, an exceeded bound, or the observation deadline. See
 | `internal/selection` | Name/tag selection and stable ordering. |
 | `internal/engine` | Run/test/step state machine and orchestration of HTTP, outputs, and checks. |
 | `internal/httpstep` | Bounded HTTP execution, redirects, proxy/TLS settings, response decoding, and trace-header injection. |
+| `internal/k6cloudrun` | Bundle, dispatch, collect, and clean distributed k6 runs on a pre-provisioned Cloud Run Job. |
 | `internal/tracecontext` | Cryptographically random W3C trace and span identifiers. |
 | `internal/checks` | Response assertion evaluation helpers. |
 | `internal/datasource` | Backend registry and adapter construction. |

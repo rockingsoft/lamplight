@@ -2,6 +2,7 @@ package trigger
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -9,8 +10,23 @@ import (
 	"strings"
 	"testing"
 
+	"lamplight/internal/k6cloudrun"
 	"lamplight/internal/model"
 )
+
+type fakeCloudRun struct {
+	request k6cloudrun.Request
+	result  k6cloudrun.Result
+	err     error
+}
+
+func (f *fakeCloudRun) Run(_ context.Context, request k6cloudrun.Request) (k6cloudrun.Result, error) {
+	f.request = request
+	if f.result.Shards != nil || f.err != nil {
+		return f.result, f.err
+	}
+	return k6cloudrun.Result{Execution: "execution", Shards: []k6cloudrun.ShardResult{{Index: 0, ExitCode: 0, Summary: map[string]any{"ok": true}}, {Index: 1, ExitCode: 0}}}, nil
+}
 
 type fakeHTTP struct {
 	request model.HTTPRequest
@@ -108,6 +124,53 @@ func TestExecuteK6RequiresBinaryInPath(t *testing.T) {
 	_, err := executor.Execute(context.Background(), model.TriggerRequest{Kind: model.TriggerK6, Attributes: map[string]any{"script": "/tmp/load.js"}}, model.DefaultHTTPClientConfig(), nil)
 	if err == nil || !strings.Contains(err.Error(), "k6 executable not found in PATH") {
 		t.Fatalf("err=%v", err)
+	}
+}
+
+func TestExecuteK6CloudRunDoesNotRequireLocalBinary(t *testing.T) {
+	runner := &fakeCloudRun{}
+	executor := New(nil)
+	executor.cloudRun = runner
+	trace := &model.TestTraceContext{TraceID: "0123456789abcdef0123456789abcdef", SpanID: "0123456789abcdef", TraceState: "lamplight=true"}
+	response, err := executor.Execute(context.Background(), model.TriggerRequest{Kind: model.TriggerK6, Attributes: map[string]any{
+		"script": "/project/load.js", "bundle_root": "/project", "env": map[string]any{"TOKEN": "secret", "BASE_URL": "https://example.test"},
+		"executor": map[string]any{"kind": "cloud_run", "project": "p", "region": "r", "job": "j", "bucket": "b", "tasks": float64(2), "job_env": []any{"TOKEN"}},
+	}}, model.DefaultHTTPClientConfig(), trace)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if response.StatusCode != 0 || runner.request.Tasks != 2 || runner.request.TraceParent != trace.TraceParent() || runner.request.Environment["TOKEN"] != "" || runner.request.Environment["BASE_URL"] == "" || len(runner.request.JobEnvironment) != 1 {
+		t.Fatalf("response=%#v request=%#v", response, runner.request)
+	}
+}
+
+func TestExecuteK6CloudRunJobEnvironmentMustExistInTriggerEnvironment(t *testing.T) {
+	executor := New(nil)
+	executor.cloudRun = &fakeCloudRun{}
+	_, err := executor.Execute(context.Background(), model.TriggerRequest{Kind: model.TriggerK6, Attributes: map[string]any{
+		"script": "/project/load.js", "bundle_root": "/project",
+		"executor": map[string]any{"kind": "cloud_run", "project": "p", "region": "r", "job": "j", "bucket": "b", "tasks": float64(1), "job_env": []any{"TOKEN"}},
+	}}, model.DefaultHTTPClientConfig(), nil)
+	if err == nil || !strings.Contains(err.Error(), "not present in k6.env") {
+		t.Fatalf("err=%v", err)
+	}
+}
+
+func TestExecuteK6CloudRunReturnsShardEvidenceOnFailure(t *testing.T) {
+	runner := &fakeCloudRun{result: k6cloudrun.Result{Execution: "execution", Shards: []k6cloudrun.ShardResult{{Index: 0, ExitCode: 99, Summary: map[string]any{"thresholds": "failed"}}}}, err: errors.New("shard failed")}
+	executor := New(nil)
+	executor.cloudRun = runner
+	response, err := executor.Execute(context.Background(), model.TriggerRequest{Kind: model.TriggerK6, Attributes: map[string]any{
+		"script": "/project/load.js", "bundle_root": "/project",
+		"executor": map[string]any{"kind": "cloud_run", "project": "p", "region": "r", "job": "j", "bucket": "b", "tasks": float64(1)},
+	}}, model.DefaultHTTPClientConfig(), nil)
+	if err == nil || response.StatusCode != 99 {
+		t.Fatalf("response=%#v err=%v", response, err)
+	}
+	jsonResult := response.JSON.(map[string]any)
+	shards := jsonResult["shards"].([]any)
+	if shards[0].(map[string]any)["summary"] == nil {
+		t.Fatalf("json=%#v", jsonResult)
 	}
 }
 

@@ -53,6 +53,29 @@ func TestPrepareK6ScriptRejectsEscape(t *testing.T) {
 	}
 }
 
+func TestPrepareK6CloudRunFilesResolveInsideProject(t *testing.T) {
+	directory := t.TempDir()
+	script := filepath.Join(directory, "load.js")
+	helper := filepath.Join(directory, "lib.js")
+	for _, path := range []string{script, helper} {
+		if err := os.WriteFile(path, []byte("test"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	request := model.TriggerRequest{Kind: model.TriggerK6, Attributes: map[string]any{"script": "load.js", "files": []any{"lib.js"}, "executor": map[string]any{"kind": "cloud_run"}}}
+	if err := prepareTriggerRequest(&request, &model.ProjectDefinition{BaseDir: directory}); err != nil {
+		t.Fatal(err)
+	}
+	files := request.Attributes["files"].([]any)
+	resolvedHelper, err := filepath.EvalSymlinks(helper)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if request.Attributes["bundle_root"] == "" || len(files) != 1 || files[0] != resolvedHelper {
+		t.Fatalf("attributes=%#v", request.Attributes)
+	}
+}
+
 func (f fakeHTTP) Execute(context.Context, model.HTTPRequest, model.HTTPClientConfig, *model.TestTraceContext) (model.Response, error) {
 	return f.response, f.err
 }

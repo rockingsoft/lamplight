@@ -578,6 +578,7 @@ step "checkout_load" {
 | `script` | yes | string expression | `var`, `steps` | JavaScript file below `project.base_dir`; relative paths start there. |
 | `env` | no | map expression | `var`, `steps` | Environment values exposed to the script through k6 `__ENV`. |
 | `arguments` | no | map | `var`, `steps` | k6 flag names and their string, number, boolean, or repeated-list values. |
+| `files` | no | list of strings | `var`, `steps` | Additional project-relative files or directories included in a remote execution bundle. |
 
 Argument keys are sorted, underscores become hyphens, and Lamplight prefixes
 them with `--`. String and number values become `--name=value`, `true` becomes
@@ -603,6 +604,73 @@ response has status code `0` and exposes `exit_code`, `stdout`, `stderr`, and
 the decoded `summary` below `response.json`. A nonzero k6 exit, including a
 failed threshold, is a trigger execution error. Output and summary sizes are
 bounded by `http_client.max_response_body_bytes`.
+
+To distribute a script across a pre-provisioned Google Cloud Run Job, add an
+explicit executor block. Omitting this block preserves local execution:
+
+```hcl
+k6 {
+  script = "k6/checkout.js"
+  files  = ["k6/lib"]
+
+  executor "cloud_run" {
+    project     = "loadtest-project"
+    region      = "southamerica-east1"
+    job         = "lamplight-k6"
+    bucket      = "lamplight-loadtest"
+    tasks       = 4
+    job_env     = ["DEMO_WEBHOOK_SECRET"]
+    timeout     = "20m"
+    start_delay = "15s"
+  }
+}
+```
+
+| Property | Required | Type | Description |
+| --- | --- | --- | --- |
+| `project` | yes | string expression | Google Cloud project containing the Job. |
+| `region` | yes | string expression | Cloud Run Job region. |
+| `job` | yes | string expression | Name of the existing Cloud Run Job. |
+| `bucket` | yes | string expression | Private Cloud Storage staging bucket. |
+| `tasks` | yes | integer expression | Number of shards, from 1 through 10,000 and no greater than the Job parallelism. |
+| `job_env` | no | list of strings | Keys declared in `k6.env` whose values must come from preconfigured `LAMPLIGHT_VAR_<KEY>` Job variables instead of the private run object. |
+| `timeout` | no | duration string or duration variable | Per-task Cloud Run timeout; defaults to `20m`. |
+| `start_delay` | no | duration string or duration variable | Shared future start barrier; defaults to `15s`. |
+
+The CLI authenticates to the Cloud Run Admin API v2 and Cloud Storage JSON API
+with Application Default Credentials; it does not invoke `gcloud`. Terraform or
+another infrastructure owner must provision the Job, its container image and
+task service account, and the private bucket. The Job must set `maxRetries` to
+zero. Lamplight refuses to run if retries are enabled because repeating one
+shard would duplicate load.
+
+Lamplight releases `ghcr.io/rockingsoft/lamplight-k6-cloud-run:<version>` as a
+multi-architecture image. Infrastructure should resolve the release tag and
+pin the resulting manifest digest for reproducible Job revisions.
+
+For each run Lamplight creates a random object prefix, uploads a gzip-compressed
+bundle plus a private task configuration, invokes `jobs.run`, waits for the
+returned operation, collects one JSON result per task, and deletes every
+run-scoped object. Cleanup treats already absent objects as success. A bucket
+lifecycle rule remains recommended as defense in depth for interrupted clients.
+
+Only the bucket name, random object name, configuration SHA-256, task count, and
+timeout are present in the Cloud Run execution override. The k6 environment and
+authoritative trace context stay in the private configuration object and are
+not logged by Lamplight's task runner. Each task derives its k6 execution
+segment from `CLOUD_RUN_TASK_INDEX` and `CLOUD_RUN_TASK_COUNT`, then waits on the
+common start barrier before invoking k6. The task runner redacts configured
+environment values from captured stdout and stderr before uploading results.
+For example, `job_env = ["DEMO_WEBHOOK_SECRET"]` requires the trigger to declare
+`env = { DEMO_WEBHOOK_SECRET = var.DEMO_WEBHOOK_SECRET }`, omits that value from
+the run object, and maps the Job's `LAMPLIGHT_VAR_DEMO_WEBHOOK_SECRET` into
+`DEMO_WEBHOOK_SECRET` inside k6. Missing, duplicate, or conflicting inherited
+environment keys fail the trigger.
+
+The response JSON contains `executor`, `execution`, `log_uri`, and a sorted
+`shards` array. Every shard exposes `index`, `exit_code`, `stdout`, `stderr`, and
+its decoded k6 `summary`. A missing result, failed task, nonzero shard exit, or
+failed threshold is a trigger execution error.
 
 The legacy `k6 { id = "<trace-id>" }` form remains accepted for compatibility
 and attaches an already generated trace. New tests should use `traceid` for
