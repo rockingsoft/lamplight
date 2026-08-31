@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/hashicorp/hcl/v2"
@@ -31,6 +32,7 @@ type Engine struct {
 	Clock        model.Clock
 	FailFast     bool
 	Progress     ProgressFunc
+	progressMu   sync.Mutex
 }
 
 func (e *Engine) Run(ctx context.Context, project *model.Project) model.RunResult {
@@ -89,6 +91,8 @@ func projectTests(project *model.Project) []model.TestDefinition {
 
 func (e *Engine) progress(event ProgressEvent) {
 	if e.Progress != nil {
+		e.progressMu.Lock()
+		defer e.progressMu.Unlock()
 		e.Progress(event)
 	}
 }
@@ -272,24 +276,25 @@ func (e *Engine) runStep(ctx context.Context, project *model.Project, step model
 			metricChecks = append(metricChecks, metricpoller.Check{Name: check.Name, Query: metricQueries[check.Name], Rule: check.Metrics.Rule, Assertions: metricAssertions(definition, response, project.Variables, stepsValue)})
 		}
 	}
+	type metricPollingResult struct {
+		result metricpoller.Result
+		err    error
+	}
+	type tracePollingResult struct {
+		result poller.Result
+		err    error
+	}
+	metricResult := make(chan metricPollingResult, 1)
+	traceResult := make(chan tracePollingResult, 1)
 	if len(metricChecks) > 0 {
 		window, settle, interval := metricWindows(project.Definition.Metrics, project.Definition.Datasource, step.Checks)
 		e.progress(ProgressEvent{Kind: ProgressMetricPolling, StepName: step.Name, ObservationWindow: window})
-		polled, pollErr := metricpoller.Poll(ctx, project.Metrics, metricBaselines, metricpoller.Config{ObservationWindow: window, SettleWindow: settle, Interval: interval, Clock: e.Clock, Progress: func(progress metricpoller.Progress) {
-			e.progress(ProgressEvent{Kind: ProgressMetricObserved, StepName: step.Name, Attempt: progress.Attempt, MetricCount: progress.MetricCount, RetryError: progress.RetryError})
-		}}, metricChecks)
-		if pollErr != nil {
-			sr.Error = diagnostic("metrics_observation", pollErr.Error())
-			return finish(model.StatusError)
-		}
-		for _, observed := range polled.Checks {
-			mergeCheck(&sr.Checks, observed)
-			if observed.Status == model.StatusFailed {
-				sr.Status = model.StatusFailed
-			} else if observed.Status == model.StatusCancelled {
-				return finish(model.StatusCancelled)
-			}
-		}
+		go func() {
+			polled, pollErr := metricpoller.Poll(ctx, project.Metrics, metricBaselines, metricpoller.Config{ObservationWindow: window, SettleWindow: settle, Interval: interval, Clock: e.Clock, Progress: func(progress metricpoller.Progress) {
+				e.progress(ProgressEvent{Kind: ProgressMetricObserved, StepName: step.Name, Attempt: progress.Attempt, MetricCount: progress.MetricCount, RetryError: progress.RetryError})
+			}}, metricChecks)
+			metricResult <- metricPollingResult{result: polled, err: pollErr}
+		}()
 	}
 	if len(spanChecks) > 0 {
 		window, settle := traceWindows(project.Definition.Datasource, step.Checks)
@@ -299,28 +304,51 @@ func (e *Engine) runStep(ctx context.Context, project *model.Project, step model
 		if project.Definition.Datasource != nil && project.Definition.Datasource.PollingInterval > 0 {
 			interval = project.Definition.Datasource.PollingInterval
 		}
-		polled, err := poller.Poll(ctx, project.Datasource, trace.TraceID, poller.Config{ObservationWindow: window, SettleWindow: settle, Interval: interval, Clock: e.Clock, Progress: func(progress poller.Progress) {
-			checks := make([]ProgressCheck, len(progress.Checks))
-			for index, check := range progress.Checks {
-				checks[index] = ProgressCheck{Name: check.Name, MatchCount: check.MatchCount, Status: check.Status, Reason: check.Reason, Rule: check.Rule}
-			}
-			e.progress(ProgressEvent{Kind: ProgressTraceObserved, StepName: step.Name, Attempt: progress.Attempt, SpanCount: progress.SpanCount, Found: progress.Found, Complete: progress.Complete, RetryError: progress.RetryError, Checks: checks})
-		}}, spanChecks)
-		if err != nil {
-			sr.Error = diagnostic("trace_observation", err.Error())
+		go func() {
+			polled, pollErr := poller.Poll(ctx, project.Datasource, trace.TraceID, poller.Config{ObservationWindow: window, SettleWindow: settle, Interval: interval, Clock: e.Clock, Progress: func(progress poller.Progress) {
+				checks := make([]ProgressCheck, len(progress.Checks))
+				for index, check := range progress.Checks {
+					checks[index] = ProgressCheck{Name: check.Name, MatchCount: check.MatchCount, Status: check.Status, Reason: check.Reason, Rule: check.Rule}
+				}
+				e.progress(ProgressEvent{Kind: ProgressTraceObserved, StepName: step.Name, Attempt: progress.Attempt, SpanCount: progress.SpanCount, Found: progress.Found, Complete: progress.Complete, RetryError: progress.RetryError, Checks: checks})
+			}}, spanChecks)
+			traceResult <- tracePollingResult{result: polled, err: pollErr}
+		}()
+	}
+	var metrics metricPollingResult
+	if len(metricChecks) > 0 {
+		metrics = <-metricResult
+	}
+	var traces tracePollingResult
+	if len(spanChecks) > 0 {
+		traces = <-traceResult
+	}
+	if metrics.err != nil {
+		sr.Error = diagnostic("metrics_observation", metrics.err.Error())
+		return finish(model.StatusError)
+	}
+	for _, observed := range metrics.result.Checks {
+		mergeCheck(&sr.Checks, observed)
+		if observed.Status == model.StatusFailed {
+			sr.Status = model.StatusFailed
+		} else if observed.Status == model.StatusCancelled {
+			return finish(model.StatusCancelled)
+		}
+	}
+	if traces.err != nil {
+		sr.Error = diagnostic("trace_observation", traces.err.Error())
+		return finish(model.StatusError)
+	}
+	for _, observed := range traces.result.Checks {
+		if observed.Reason == "trace_not_observed" {
+			sr.Error = diagnostic("trace_not_observed", "trace was not observed before the observation window elapsed")
 			return finish(model.StatusError)
 		}
-		for _, observed := range polled.Checks {
-			if observed.Reason == "trace_not_observed" {
-				sr.Error = diagnostic("trace_not_observed", "trace was not observed before the observation window elapsed")
-				return finish(model.StatusError)
-			}
-			mergeCheck(&sr.Checks, observed)
-			if observed.Status == model.StatusFailed {
-				sr.Status = model.StatusFailed
-			} else if observed.Status == model.StatusCancelled {
-				return finish(model.StatusCancelled)
-			}
+		mergeCheck(&sr.Checks, observed)
+		if observed.Status == model.StatusFailed {
+			sr.Status = model.StatusFailed
+		} else if observed.Status == model.StatusCancelled {
+			return finish(model.StatusCancelled)
 		}
 	}
 	return finish(sr.Status)

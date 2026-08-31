@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -41,6 +42,7 @@ func (f *recordingHTTP) Execute(ctx context.Context, request model.HTTPRequest, 
 }
 
 type engineClock struct {
+	mu    sync.Mutex
 	now   time.Time
 	waits []time.Duration
 }
@@ -49,6 +51,57 @@ type metricStore struct {
 	snapshots []model.MetricSnapshot
 	calls     int
 	queries   []string
+}
+
+type blockingMetricStore struct {
+	mu      sync.Mutex
+	calls   int
+	started chan struct{}
+	release <-chan struct{}
+}
+
+func (s *blockingMetricStore) Snapshot(ctx context.Context, _ string) (model.MetricSnapshot, error) {
+	s.mu.Lock()
+	s.calls++
+	call := s.calls
+	s.mu.Unlock()
+	if call == 1 {
+		return model.MetricSnapshot{Samples: []model.MetricSample{{Name: "operations_total", Value: 1}}}, nil
+	}
+	if call == 2 {
+		close(s.started)
+		select {
+		case <-ctx.Done():
+			return model.MetricSnapshot{}, ctx.Err()
+		case <-s.release:
+		}
+	}
+	return model.MetricSnapshot{Samples: []model.MetricSample{{Name: "operations_total", Value: 2}}}, nil
+}
+
+type blockingTraceStore struct {
+	mu      sync.Mutex
+	calls   int
+	started chan struct{}
+	release <-chan struct{}
+}
+
+func (*blockingTraceStore) TestConnection(context.Context) error { return nil }
+
+func (s *blockingTraceStore) Observe(ctx context.Context, _ model.TraceID) (model.TraceObservation, error) {
+	s.mu.Lock()
+	s.calls++
+	call := s.calls
+	s.mu.Unlock()
+	if call == 1 {
+		close(s.started)
+		select {
+		case <-ctx.Done():
+			return model.TraceObservation{}, ctx.Err()
+		case <-s.release:
+		}
+	}
+	return model.TraceObservation{Found: true, Valid: true, Complete: true, Spans: []model.Span{{Name: "operation"}}}, nil
 }
 
 func (s *metricStore) Snapshot(_ context.Context, query string) (model.MetricSnapshot, error) {
@@ -61,8 +114,14 @@ func (s *metricStore) Snapshot(_ context.Context, query string) (model.MetricSna
 	return s.snapshots[index], nil
 }
 
-func (c *engineClock) Now() time.Time { return c.now }
+func (c *engineClock) Now() time.Time {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.now
+}
 func (c *engineClock) After(duration time.Duration) <-chan time.Time {
+	c.mu.Lock()
+	defer c.mu.Unlock()
 	c.waits = append(c.waits, duration)
 	c.now = c.now.Add(duration)
 	result := make(chan time.Time, 1)
@@ -137,6 +196,53 @@ func TestRunKeepsMetricFailureWhenCombinedSpanCheckPasses(t *testing.T) {
 	result := run.Tests[0].Steps[0].Checks[0]
 	if run.Status != model.StatusFailed || result.Status != model.StatusFailed || result.Reason != "metric_assertion_failed" || result.MetricEvidence == nil || result.SpanEvidence == nil {
 		t.Fatalf("combined result=%#v run_status=%s", result, run.Status)
+	}
+}
+
+func TestRunPollsMetricsAndTracesConcurrently(t *testing.T) {
+	release := make(chan struct{})
+	metricStarted := make(chan struct{})
+	traceStarted := make(chan struct{})
+	check := model.CheckDefinition{
+		Name: "operation telemetry",
+		Metrics: &model.MetricCheckDefinition{
+			Query:      parseExpr(t, `"operations_total"`),
+			Assertions: map[string]hcl.Expression{"increments once": parseExpr(t, `metric.delta == 1`)},
+			Rule:       model.QuantityRule{Kind: "exactly", Value: 1},
+		},
+		Spans: &model.SpanCheckDefinition{
+			Matching: parseExpr(t, `span.name == "operation"`),
+			Rule:     model.QuantityRule{Kind: "at_least", Value: 1},
+		},
+	}
+	step := model.StepDefinition{Name: "request", HTTP: model.HTTPRequestDefinition{Method: parseExpr(t, `"GET"`), URL: parseExpr(t, `"http://example.test"`)}, Checks: []model.CheckDefinition{check}}
+	project := engineProject(step)
+	project.Definition.Datasource = &model.DatasourceDefinition{ObservationWindow: time.Second, SettleWindow: time.Nanosecond, PollingInterval: time.Millisecond}
+	project.Definition.Metrics = &model.MetricsDefinition{ObservationWindow: time.Second, SettleWindow: time.Nanosecond, PollingInterval: time.Millisecond}
+	project.Datasource = &blockingTraceStore{started: traceStarted, release: release}
+	project.Metrics = &blockingMetricStore{started: metricStarted, release: release}
+
+	done := make(chan model.RunResult, 1)
+	go func() {
+		done <- (&Engine{HTTP: fakeHTTP{response: model.Response{StatusCode: 200}}, TraceFactory: traceFactory{context: model.TestTraceContext{TraceID: "trace"}}}).Run(context.Background(), project)
+	}()
+
+	for name, started := range map[string]<-chan struct{}{"metrics": metricStarted, "traces": traceStarted} {
+		select {
+		case <-started:
+		case <-time.After(time.Second):
+			t.Fatalf("%s polling did not start while the other signal was blocked", name)
+		}
+	}
+	close(release)
+	select {
+	case run := <-done:
+		result := run.Tests[0].Steps[0].Checks[0]
+		if run.Status != model.StatusPassed || result.MetricEvidence == nil || result.SpanEvidence == nil {
+			t.Fatalf("run=%#v result=%#v", run, result)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("run did not finish after both signal pollers were released")
 	}
 }
 
