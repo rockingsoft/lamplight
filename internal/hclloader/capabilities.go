@@ -26,7 +26,15 @@ type TriggerCapability struct {
 	Description      string                `json:"description"`
 	Attributes       []AttributeCapability `json:"attributes"`
 	ExactlyOneOf     []string              `json:"exactly_one_of,omitempty"`
+	Executors        []ExecutorCapability  `json:"executors,omitempty"`
 	Example          string                `json:"example"`
+}
+
+type ExecutorCapability struct {
+	Block       string                `json:"block"`
+	Description string                `json:"description"`
+	Attributes  []AttributeCapability `json:"attributes"`
+	Example     string                `json:"example"`
 }
 
 var triggerCapabilities = map[string]TriggerCapability{
@@ -85,14 +93,29 @@ var triggerCapabilities = map[string]TriggerCapability{
 	"playwright": traceIDCapability("playwright", model.TriggerPlaywright, "Attach a trace ID produced by Playwright."),
 	"artillery":  traceIDCapability("artillery", model.TriggerArtillery, "Attach a trace ID produced by Artillery."),
 	"k6": {
-		Block: "k6", Kind: model.TriggerK6, Execution: "local_process_or_trace_attachment", TracePropagation: "w3c_environment",
-		Description: "Run a local k6 script or attach an existing k6 trace ID.", ExactlyOneOf: []string{"id", "script"},
+		Block: "k6", Kind: model.TriggerK6, Execution: "local_or_cloud_run_process_or_trace_attachment", TracePropagation: "w3c_environment",
+		Description: "Run a local or distributed Cloud Run k6 script, or attach an existing k6 trace ID.", ExactlyOneOf: []string{"id", "script"},
 		Attributes: []AttributeCapability{
 			{Name: "id", Type: "trace_id", Description: "Existing 32-character trace ID; mutually exclusive with script."},
 			{Name: "script", Type: "project_relative_file", Description: "k6 JavaScript file; mutually exclusive with id."},
 			{Name: "env", Type: "map(string)", Sensitive: true, Description: "Environment values exposed through __ENV."},
 			{Name: "arguments", Type: "map(string|number|bool|list)", Description: "k6 flags without leading dashes."},
+			{Name: "files", Type: "list(project_relative_file)", Description: "Additional files or directories included in a remote execution bundle."},
 		},
+		Executors: []ExecutorCapability{{
+			Block: "cloud_run", Description: "Run the k6 script as distributed tasks on a pre-provisioned Google Cloud Run Job.",
+			Attributes: []AttributeCapability{
+				{Name: "project", Type: "string", Required: true, Description: "Google Cloud project ID."},
+				{Name: "region", Type: "string", Required: true, Description: "Cloud Run Job region."},
+				{Name: "job", Type: "string", Required: true, Description: "Pre-provisioned Cloud Run Job name."},
+				{Name: "bucket", Type: "string", Required: true, Description: "Private Cloud Storage staging bucket."},
+				{Name: "tasks", Type: "int", Required: true, Description: "Number of distributed k6 tasks."},
+				{Name: "job_env", Type: "list(string)", Description: "k6 environment keys resolved from preconfigured LAMPLIGHT_VAR_* Job variables instead of the run bundle."},
+				{Name: "timeout", Type: "duration", Description: "Per-task timeout; defaults to 20m."},
+				{Name: "start_delay", Type: "duration", Description: "Shared start barrier delay; defaults to 15s."},
+			},
+			Example: "executor \"cloud_run\" {\n  project = \"loadtest-project\"\n  region  = \"southamerica-east1\"\n  job     = \"lamplight-k6\"\n  bucket  = \"lamplight-loadtest\"\n  tasks   = 4\n}",
+		}},
 		Example: "k6 {\n  script = \"k6/load.js\"\n  env = {\n    BASE_URL = \"https://example.test\"\n  }\n  arguments = {\n    vus        = 1\n    iterations = 1\n  }\n}",
 	},
 	"playwright_engine": {
@@ -128,6 +151,10 @@ func TriggerCapabilities() []TriggerCapability {
 		capability := triggerCapabilities[block]
 		capability.Attributes = append([]AttributeCapability(nil), capability.Attributes...)
 		capability.ExactlyOneOf = append([]string(nil), capability.ExactlyOneOf...)
+		capability.Executors = append([]ExecutorCapability(nil), capability.Executors...)
+		for index := range capability.Executors {
+			capability.Executors[index].Attributes = append([]AttributeCapability(nil), capability.Executors[index].Attributes...)
+		}
 		capabilities = append(capabilities, capability)
 	}
 	return capabilities

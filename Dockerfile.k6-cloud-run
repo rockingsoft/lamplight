@@ -1,0 +1,10 @@
+FROM docker.io/grafana/k6:1.8.0@sha256:b992f241070f3f3a7d78096fa6020db1edcda49297ee8ed9eb0ab847ef3dcb32
+
+LABEL org.opencontainers.image.source="https://github.com/rockingsoft/lamplight"
+
+USER root
+ARG TARGETPLATFORM
+COPY ${TARGETPLATFORM}/lamplight-k6-cloud-run /usr/local/bin/lamplight-k6-cloud-run
+USER 12345
+
+ENTRYPOINT ["/usr/local/bin/lamplight-k6-cloud-run"]

@@ -58,3 +58,63 @@ func TestK6RequiresExactlyOneSource(t *testing.T) {
 		}
 	}
 }
+
+func TestK6CloudRunExecutor(t *testing.T) {
+	source := `step "load" {
+  k6 {
+    script = "load.js"
+    files  = ["lib"]
+    executor "cloud_run" {
+      project = "project"
+      region  = "southamerica-east1"
+      job     = "loadtest"
+      bucket  = "bucket"
+      tasks   = 4
+      timeout = "20m"
+    }
+  }
+}`
+	file, diags := hclparse.NewParser().ParseHCL([]byte(source), "trigger.wick")
+	if diags.HasErrors() {
+		t.Fatal(diags.Error())
+	}
+	step, diagnostics := parseStep(file.Body.(*hclsyntax.Body).Blocks[0].AsHCLBlock())
+	if len(diagnostics) != 0 {
+		t.Fatalf("diagnostics=%#v", diagnostics)
+	}
+	if step.Trigger.Executor == nil || step.Trigger.Executor.Kind != "cloud_run" || len(step.Trigger.Executor.Attributes) != 6 {
+		t.Fatalf("executor=%#v", step.Trigger.Executor)
+	}
+}
+
+func TestK6CloudRunExecutorRequiresScriptAndFilesRequireExecutor(t *testing.T) {
+	for _, source := range []string{
+		`step "load" {
+  k6 {
+    id = "0123456789abcdef0123456789abcdef"
+    executor "cloud_run" {
+      project = "p"
+      region = "r"
+      job = "j"
+      bucket = "b"
+      tasks = 1
+    }
+  }
+}`,
+		`step "load" {
+  k6 {
+    script = "load.js"
+    files = ["lib"]
+  }
+}`,
+	} {
+		file, diags := hclparse.NewParser().ParseHCL([]byte(source), "trigger.wick")
+		if diags.HasErrors() {
+			t.Fatal(diags.Error())
+		}
+		_, diagnostics := parseStep(file.Body.(*hclsyntax.Body).Blocks[0].AsHCLBlock())
+		if len(diagnostics) == 0 {
+			t.Fatalf("expected diagnostics for %s", source)
+		}
+	}
+}

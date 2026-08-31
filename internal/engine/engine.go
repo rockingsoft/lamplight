@@ -388,6 +388,39 @@ func prepareTriggerRequest(request *model.TriggerRequest, definition *model.Proj
 		return fmt.Errorf("k6 script %q is not a regular file", script)
 	}
 	request.Attributes["script"] = path
+	if _, remote := request.Attributes["executor"]; remote {
+		request.Attributes["bundle_root"] = base
+	}
+	if rawFiles, exists := request.Attributes["files"]; exists {
+		files, ok := rawFiles.([]any)
+		if !ok {
+			return fmt.Errorf("k6.files must be a list of project-relative paths")
+		}
+		resolved := make([]any, 0, len(files))
+		for _, raw := range files {
+			name, ok := raw.(string)
+			if !ok || strings.TrimSpace(name) == "" {
+				return fmt.Errorf("k6.files entries must be non-empty strings")
+			}
+			candidate := name
+			if !filepath.IsAbs(candidate) {
+				candidate = filepath.Join(base, candidate)
+			}
+			candidate, err = filepath.EvalSymlinks(candidate)
+			if err != nil {
+				return fmt.Errorf("resolve k6 file %q: %w", name, err)
+			}
+			relative, relErr := filepath.Rel(base, candidate)
+			if relErr != nil || relative == ".." || strings.HasPrefix(relative, ".."+string(filepath.Separator)) {
+				return fmt.Errorf("k6 file %q escapes project.base_dir", name)
+			}
+			if _, statErr := os.Stat(candidate); statErr != nil {
+				return fmt.Errorf("inspect k6 file %q: %w", name, statErr)
+			}
+			resolved = append(resolved, candidate)
+		}
+		request.Attributes["files"] = resolved
+	}
 	return nil
 }
 
@@ -408,6 +441,25 @@ func evaluateTrigger(def model.TriggerDefinition, variables map[string]model.Sen
 			return request, fmt.Errorf("decode %s: %w", name, err)
 		}
 		request.Attributes[name] = decoded
+	}
+	if def.Executor != nil {
+		executor := map[string]any{"kind": def.Executor.Kind}
+		for _, name := range sortedExpressions(def.Executor.Attributes) {
+			value, diags := expr.Evaluate(def.Executor.Attributes[name], ctx)
+			if diags.HasErrors() || !value.IsKnown() || value.IsNull() {
+				return request, fmt.Errorf("executor.%s must evaluate to a known non-null value: %s", name, diags.Error())
+			}
+			encoded, err := ctyjson.Marshal(value, value.Type())
+			if err != nil {
+				return request, fmt.Errorf("encode executor.%s: %w", name, err)
+			}
+			var decoded any
+			if err := json.Unmarshal(encoded, &decoded); err != nil {
+				return request, fmt.Errorf("decode executor.%s: %w", name, err)
+			}
+			executor[name] = decoded
+		}
+		request.Attributes["executor"] = executor
 	}
 	return request, nil
 }

@@ -20,6 +20,20 @@ builds:
       - -trimpath
     ldflags:
       - -s -w -X lamplight/internal/buildinfo.Version={{ .Version }}
+  - id: lamplight-k6-cloud-run
+    main: ./cmd/lamplight-k6-cloud-run
+    binary: lamplight-k6-cloud-run
+    env:
+      - CGO_ENABLED=0
+    goos:
+      - linux
+    goarch:
+      - amd64
+      - arm64
+    flags:
+      - -trimpath
+    ldflags:
+      - -s -w
 
 dockers_v2:
   - id: lamplight
@@ -28,6 +42,17 @@ dockers_v2:
     dockerfile: Dockerfile
     images:
       - ghcr.io/rockingsoft/lamplight
+    tags:
+      - "{{ .Version }}"
+    platforms:
+      - linux/amd64
+      - linux/arm64
+  - id: lamplight-k6-cloud-run
+    ids:
+      - lamplight-k6-cloud-run
+    dockerfile: Dockerfile.k6-cloud-run
+    images:
+      - ghcr.io/rockingsoft/lamplight-k6-cloud-run
     tags:
       - "{{ .Version }}"
     platforms:
@@ -48,6 +73,11 @@ archives:
       {{ .ProjectName }}_{{ .Version }}_{{ .Os }}_
       {{- if eq .Arch "amd64" }}x86_64
       {{- else }}{{ .Arch }}{{ end }}
+  - id: lamplight-k6-cloud-run
+    ids:
+      - lamplight-k6-cloud-run
+    formats:
+      - binary
 
 checksum:
   name_template: checksums.txt

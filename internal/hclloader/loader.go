@@ -560,6 +560,9 @@ func parseTrigger(block *hcl.Block) (model.TriggerDefinition, []model.Diagnostic
 	for _, attribute := range capability.Attributes {
 		schema.Attributes = append(schema.Attributes, hcl.AttributeSchema{Name: attribute.Name, Required: attribute.Required})
 	}
+	if block.Type == "k6" {
+		schema.Blocks = append(schema.Blocks, hcl.BlockHeaderSchema{Type: "executor", LabelNames: []string{"kind"}})
+	}
 	content, hclDiags := block.Body.Content(schema)
 	definition := model.TriggerDefinition{Kind: capability.Kind, Attributes: map[string]hcl.Expression{}}
 	for name, attribute := range content.Attributes {
@@ -571,6 +574,29 @@ func parseTrigger(block *hcl.Block) (model.TriggerDefinition, []model.Diagnostic
 		_, hasScript := content.Attributes["script"]
 		if hasID == hasScript {
 			diags = append(diags, diagnostic.Error(diagnostic.CodeSchema, "k6 requires exactly one of id or script", block.DefRange, "use script to execute k6 or id to attach an existing trace"))
+		}
+		executors := blocksOfType(content.Blocks, "executor")
+		if len(executors) > 1 {
+			diags = append(diags, diagnostic.Error(diagnostic.CodeSchema, "k6 executor may appear at most once", block.DefRange, "keep one executor block"))
+		} else if len(executors) == 1 {
+			if hasID {
+				diags = append(diags, diagnostic.Error(diagnostic.CodeSchema, "k6 executor requires script execution", executors[0].DefRange, "remove id and configure script"))
+			}
+			executor := executors[0]
+			if len(executor.Labels) != 1 || executor.Labels[0] != "cloud_run" {
+				diags = append(diags, diagnostic.Error(diagnostic.CodeSchema, "k6 executor must be cloud_run", executor.DefRange, "use executor \"cloud_run\""))
+			} else {
+				attributes := []hcl.AttributeSchema{{Name: "project", Required: true}, {Name: "region", Required: true}, {Name: "job", Required: true}, {Name: "bucket", Required: true}, {Name: "tasks", Required: true}, {Name: "job_env"}, {Name: "timeout"}, {Name: "start_delay"}}
+				body, bodyDiags := executor.Body.Content(&hcl.BodySchema{Attributes: attributes})
+				diags = append(diags, diagnostic.FromHCL(bodyDiags, diagnostic.CodeSchema)...)
+				definition.Executor = &model.TriggerExecutorDefinition{Kind: "cloud_run", Attributes: map[string]hcl.Expression{}, Range: model.Range(executor.DefRange)}
+				for name, attribute := range body.Attributes {
+					definition.Executor.Attributes[name] = attribute.Expr
+				}
+			}
+		}
+		if _, hasFiles := content.Attributes["files"]; hasFiles && len(executors) == 0 {
+			diags = append(diags, diagnostic.Error(diagnostic.CodeSchema, "k6.files requires a remote executor", content.Attributes["files"].Range, "add executor \"cloud_run\" or remove files"))
 		}
 	}
 	return definition, diags
@@ -877,6 +903,11 @@ func validateReferences(definition *model.ProjectDefinition) []model.Diagnostic 
 			}
 			for _, expression := range mapExpressions(step.Trigger.Attributes) {
 				diags = append(diags, validateExpression(expression, definition.Variables, seen, "var", "steps")...)
+			}
+			if step.Trigger.Executor != nil {
+				for _, expression := range mapExpressions(step.Trigger.Executor.Attributes) {
+					diags = append(diags, validateExpression(expression, definition.Variables, seen, "var", "steps")...)
+				}
 			}
 			for _, expression := range mapExpressions(step.Outputs) {
 				diags = append(diags, validateExpression(expression, definition.Variables, seen, "response", "var", "steps")...)

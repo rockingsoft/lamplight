@@ -136,6 +136,13 @@ const (
 type TriggerDefinition struct {
 	Kind       TriggerKind
 	Attributes map[string]hcl.Expression
+	Executor   *TriggerExecutorDefinition
+}
+
+type TriggerExecutorDefinition struct {
+	Kind       string
+	Attributes map[string]hcl.Expression
+	Range      SourceRange
 }
 
 type TriggerRequest struct {
