@@ -174,12 +174,17 @@ func (s *Store) query(ctx context.Context, query string) (model.MetricSnapshot, 
 	if strings.TrimSpace(query) == "" {
 		return model.MetricSnapshot{}, errors.New("metrics \"prometheus\" checks require a PromQL query")
 	}
-	form := url.Values{"query": []string{query}}
-	request, err := http.NewRequestWithContext(ctx, http.MethodPost, s.endpoint, strings.NewReader(form.Encode()))
+	endpoint, err := url.Parse(s.endpoint)
 	if err != nil {
 		return model.MetricSnapshot{}, err
 	}
-	request.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	parameters := endpoint.Query()
+	parameters.Set("query", query)
+	endpoint.RawQuery = parameters.Encode()
+	request, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint.String(), nil)
+	if err != nil {
+		return model.MetricSnapshot{}, err
+	}
 	request.Header.Set("Accept", "application/json")
 	for name, value := range s.headers {
 		request.Header.Set(name, value)

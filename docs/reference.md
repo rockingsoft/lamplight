@@ -339,7 +339,7 @@ metrics "prometheus" {
 }
 ```
 
-Lamplight posts each check's `query` to `/api/v1/query` immediately before and
+Lamplight sends each check's `query` to `/api/v1/query` with `GET` immediately before and
 during the observation window after the trigger. The query must return an instant vector. Aggregations such
 as `sum by (...)` are therefore evaluated by Prometheus rather than recreated
 inside Lamplight.
