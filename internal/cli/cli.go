@@ -32,6 +32,7 @@ import (
 	"lamplight/internal/httpstep"
 	"lamplight/internal/initcmd"
 	"lamplight/internal/instrumentation"
+	"lamplight/internal/k6cloudrun"
 	"lamplight/internal/mcpserver"
 	metricsprometheus "lamplight/internal/metricssource/prometheus"
 	"lamplight/internal/model"
@@ -416,7 +417,9 @@ func run(ctx context.Context, args []string, streams IO) int {
 	fs.Var(&tags, "tag", "select tag (repeatable)")
 	fs.Var(&files, "file", "select definition file relative to project.base_dir (repeatable)")
 	exclude := fs.Bool("exclude", false, "exclude tests matching the selector")
-	output := fs.String("output", "", "output format")
+	legacyOutput := fs.String("output", "", "deprecated output format")
+	jsonFile := fs.String("json-file", "", "write the final JSON result to a file")
+	textFile := fs.String("text-file", "", "write the final deterministic text result to a file")
 	keep := fs.Bool("keep-artifacts", false, "keep successful artifacts")
 	failFast := fs.Bool("fail-fast", false, "stop after the first failed or errored test")
 	artifactsDir := fs.String("artifacts-dir", "", "artifact parent directory")
@@ -424,6 +427,18 @@ func run(ctx context.Context, args []string, streams IO) int {
 	fs.Var(&vars, "var", "NAME=VALUE")
 	if fs.Parse(normalizeRunArgs(args)) != nil {
 		return 1
+	}
+	if *legacyOutput != "" && (*jsonFile != "" || *textFile != "") {
+		writeLine(streams.Err, "error: --output cannot be combined with --json-file or --text-file")
+		return 1
+	}
+	if *jsonFile != "" && *textFile != "" {
+		jsonPath, jsonErr := filepath.Abs(*jsonFile)
+		textPath, textErr := filepath.Abs(*textFile)
+		if jsonErr != nil || textErr != nil || jsonPath == textPath {
+			writeLine(streams.Err, "error: result files: --json-file and --text-file must use different paths")
+			return 1
+		}
 	}
 	remaining := fs.Args()
 	if len(remaining) > 1 {
@@ -512,26 +527,20 @@ func run(ctx context.Context, args []string, streams IO) int {
 		runtimeProject.Metrics = store
 	}
 	redactor := result.NewRedactor(sensitiveStrings(values)...)
-	format := render.Format(def.Output)
-	if *output != "" {
-		format = render.Format(*output)
-	}
 	var renderer model.Renderer
-	if format == render.FormatPretty {
-		if isCIEnvironment(os.Getenv) {
-			renderer = render.NewPrettyRenderer(false, redactor)
-		} else {
-			renderer = render.NewAutoPrettyRenderer(streams.Out, redactor)
+	if *legacyOutput != "" {
+		renderer, err = render.New(render.Format(*legacyOutput), redactor)
+		if err != nil {
+			writeLine(streams.Err, "error:", err)
+			return 1
 		}
+	} else if isCIEnvironment(os.Getenv) {
+		renderer = render.NewPrettyRenderer(false, redactor)
 	} else {
-		renderer, err = render.New(format, redactor)
-	}
-	if err != nil {
-		writeLine(streams.Err, "error:", err)
-		return 1
+		renderer = render.NewAutoPrettyRenderer(streams.Out, redactor)
 	}
 	var progressFunc engine.ProgressFunc
-	if format == render.FormatPretty {
+	if *legacyOutput == "" || render.Format(*legacyOutput) == render.FormatPretty {
 		if isCIEnvironment(os.Getenv) {
 			progressFunc = newCIRunProgress(streams.Err, redactor).Report
 		} else {
@@ -539,7 +548,11 @@ func run(ctx context.Context, args []string, streams IO) int {
 		}
 	}
 	var httpExecutor model.HTTPExecutor = httpstep.New(nil)
-	var triggers model.TriggerExecutor = triggerexecutor.New(httpExecutor)
+	localTriggers := triggerexecutor.New(httpExecutor)
+	localTriggers.Progress = func(remote k6cloudrun.Progress) {
+		progressFunc(engine.ProgressEvent{Kind: engine.ProgressRemoteTrigger, RemotePhase: remote.Phase, RemoteExecution: remote.Execution, RemoteLogURI: remote.LogURI, CompletedShards: remote.CompletedShards, TotalShards: remote.TotalShards, Elapsed: remote.Elapsed})
+	}
+	var triggers model.TriggerExecutor = localTriggers
 	var closeRemote func() error
 	var closeInstrumentation func() error
 	if target.Runtime == "local" {
@@ -620,7 +633,58 @@ func run(ctx context.Context, args []string, streams IO) int {
 		return 1
 	}
 	_, _ = streams.Out.Write(encoded)
+	for _, export := range []struct {
+		path   string
+		format render.Format
+		label  string
+	}{
+		{path: *jsonFile, format: render.FormatJSON, label: "JSON"},
+		{path: *textFile, format: render.FormatText, label: "text"},
+	} {
+		if export.path == "" {
+			continue
+		}
+		exportRenderer, renderErr := render.New(export.format, redactor)
+		if renderErr != nil {
+			writeLine(streams.Err, "error: render", export.label+":", renderErr)
+			return 1
+		}
+		exported, renderErr := exportRenderer.Render(runResult)
+		if renderErr != nil {
+			writeLine(streams.Err, "error: render", export.label+":", renderErr)
+			return 1
+		}
+		if writeErr := writeResultFile(export.path, exported); writeErr != nil {
+			writeLine(streams.Err, "error: write", export.label, "result:", writeErr)
+			return 1
+		}
+	}
 	return result.ExitCode(runResult)
+}
+
+func writeResultFile(path string, data []byte) error {
+	absolute, err := filepath.Abs(path)
+	if err != nil {
+		return err
+	}
+	temporary, err := os.CreateTemp(filepath.Dir(absolute), ".lamplight-result-*")
+	if err != nil {
+		return err
+	}
+	temporaryPath := temporary.Name()
+	defer func() { _ = os.Remove(temporaryPath) }()
+	if err := temporary.Chmod(0o600); err != nil {
+		_ = temporary.Close()
+		return err
+	}
+	if _, err := temporary.Write(data); err != nil {
+		_ = temporary.Close()
+		return err
+	}
+	if err := temporary.Close(); err != nil {
+		return err
+	}
+	return os.Rename(temporaryPath, absolute)
 }
 
 func containsExecutableK6(tests []model.TestDefinition) bool {
@@ -639,7 +703,7 @@ func containsExecutableK6(tests []model.TestDefinition) bool {
 func normalizeRunArgs(args []string) []string {
 	flags := make([]string, 0, len(args))
 	positionals := make([]string, 0, 1)
-	valueFlags := map[string]bool{"--tag": true, "--file": true, "--output": true, "--artifacts-dir": true, "--var": true, "--target": true, "--config": true, "-c": true, "--working-dir": true, "-w": true}
+	valueFlags := map[string]bool{"--tag": true, "--file": true, "--output": true, "--json-file": true, "--text-file": true, "--artifacts-dir": true, "--var": true, "--target": true, "--config": true, "-c": true, "--working-dir": true, "-w": true}
 	for index := 0; index < len(args); index++ {
 		argument := args[index]
 		if strings.HasPrefix(argument, "-") {
@@ -971,7 +1035,8 @@ Options:
       --exclude           Exclude tests matching the name, files, or tags
       --var NAME=VALUE    Override a variable (repeatable)
       --target NAME       Use a named execution target (default: project default or local)
-      --output FORMAT     Output format: pretty, text, or json
+      --json-file FILE    Write the final JSON result to FILE
+      --text-file FILE    Write the final deterministic text result to FILE
       --fail-fast         Stop after the first failed or errored test
       --keep-artifacts    Keep artifacts for successful runs
       --artifacts-dir DIR Artifact parent directory

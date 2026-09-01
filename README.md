@@ -87,7 +87,6 @@ The generated project configuration is intentionally small:
 ```hcl
 project {
   base_dir = "./lamplight"
-  output   = "pretty"
 }
 ```
 
@@ -153,7 +152,7 @@ targets. It uses elevated eBPF privileges and is intentionally unsupported for
 local macOS and Windows processes. See the [configuration reference](docs/reference.md#23-zero-code-instrumentation)
 for runtime requirements and Kubernetes permissions.
 
-Lamplight prints live trigger, trace-polling, and metric-polling progress. A run continues after
+Lamplight prints live trigger, remote Cloud Run shard, trace-polling, and metric-polling progress. A run continues after
 a failed test by default so it can report the complete result; use
 `--fail-fast` when an early exit is more useful.
 
@@ -333,15 +332,16 @@ lamplight list tests
 lamplight fmt
 ```
 
-Choose machine-readable output for CI or another tool:
+The console always uses the human-readable progress reporter. Export a final
+machine-readable result to a file for CI or another tool:
 
 ```sh
-lamplight run --output text
-lamplight run --output json
+lamplight run --text-file ./result.txt
+lamplight run --json-file ./result.json
 ```
 
-Output formats are `pretty` for interactive use, deterministic `text` without
-ANSI escapes, and versioned `json` described by
+Both export flags may be used together. Text output is deterministic and has no
+ANSI escapes. JSON is versioned and described by
 [`schemas/run-result-v1.schema.json`](schemas/run-result-v1.schema.json).
 
 Exit codes are stable:

@@ -202,7 +202,6 @@ type TestDefinition struct {
 type ProjectDefinition struct {
 	ConfigPath      string
 	BaseDir         string
-	Output          string
 	HTTPClient      HTTPClientConfig
 	HTTPProxy       hcl.Expression
 	Datasource      *DatasourceDefinition

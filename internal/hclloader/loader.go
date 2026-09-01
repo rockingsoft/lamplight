@@ -37,7 +37,7 @@ func (loader Loader) LoadProject(options config.Options) (*model.ProjectDefiniti
 	if root == nil {
 		return nil, diags
 	}
-	definition := &model.ProjectDefinition{ConfigPath: root.ConfigPath, BaseDir: root.BaseDir, Output: root.Output, HTTPClient: root.HTTPClient, HTTPProxy: root.ProxyExpr, Variables: map[string]model.VariableDefinition{}, Tests: map[string]model.TestDefinition{}, DefaultTarget: root.DefaultTarget, Targets: map[string]model.TargetDefinition{}}
+	definition := &model.ProjectDefinition{ConfigPath: root.ConfigPath, BaseDir: root.BaseDir, HTTPClient: root.HTTPClient, HTTPProxy: root.ProxyExpr, Variables: map[string]model.VariableDefinition{}, Tests: map[string]model.TestDefinition{}, DefaultTarget: root.DefaultTarget, Targets: map[string]model.TargetDefinition{}}
 	if root.DatasourceRaw != nil {
 		datasource, ds := parseDatasource(root.DatasourceRaw)
 		diags = append(diags, ds...)

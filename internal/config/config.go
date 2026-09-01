@@ -80,7 +80,6 @@ func Resolve(options Options) (Paths, []model.Diagnostic) {
 type Config struct {
 	Paths
 	BaseDir            string
-	Output             string
 	HTTPClient         model.HTTPClientConfig
 	ProxyExpr          hcl.Expression
 	ConfigFile         *hcl.File
@@ -144,17 +143,12 @@ func Load(options Options) (*Config, []model.Diagnostic) {
 			diags = append(diags, diagnostic.Error(diagnostic.CodePath, fmt.Sprintf("project.base_dir %q does not exist or is not a directory", base), baseExpr.Range(), "create the directory or correct base_dir"))
 		}
 	}
-	output := "pretty"
 	if attr, ok := projectContent.Attributes["output"]; ok {
-		var value string
-		value, valueDiags = literalString(attr.Expr)
-		diags = append(diags, valueDiags...)
-		if value != "" {
-			output = value
+		legacyOutput, legacyDiags := literalString(attr.Expr)
+		diags = append(diags, legacyDiags...)
+		if legacyOutput != "" && legacyOutput != "pretty" && legacyOutput != "text" && legacyOutput != "json" {
+			diags = append(diags, diagnostic.Error(diagnostic.CodeConfig, fmt.Sprintf("project.output must be pretty, text, or json; got %q", legacyOutput), attr.Range, "remove project.output and use a result-file flag when machine-readable output is needed"))
 		}
-	}
-	if output != "pretty" && output != "text" && output != "json" {
-		diags = append(diags, diagnostic.Error(diagnostic.CodeConfig, fmt.Sprintf("project.output must be pretty, text, or json; got %q", output), project.DefRange, "choose pretty, text, or json"))
 	}
 	defaultTarget := ""
 	if attr, ok := projectContent.Attributes["default_target"]; ok {
@@ -194,7 +188,7 @@ func Load(options Options) (*Config, []model.Diagnostic) {
 			definitions = append(definitions, block)
 		}
 	}
-	return &Config{Paths: paths, BaseDir: base, Output: output, HTTPClient: httpConfig, ProxyExpr: proxyExpr, ConfigFile: file, ProjectRange: project.DefRange, DatasourceRaw: datasource, MetricsRaw: metrics, InstrumentationRaw: instrumentation, DefinitionRaw: definitions, DefaultTarget: defaultTarget}, diags
+	return &Config{Paths: paths, BaseDir: base, HTTPClient: httpConfig, ProxyExpr: proxyExpr, ConfigFile: file, ProjectRange: project.DefRange, DatasourceRaw: datasource, MetricsRaw: metrics, InstrumentationRaw: instrumentation, DefinitionRaw: definitions, DefaultTarget: defaultTarget}, diags
 }
 
 func literalString(expression hcl.Expression) (string, []model.Diagnostic) {

@@ -1,4 +1,3 @@
 project {
   base_dir = "."
-  output   = "json"
 }

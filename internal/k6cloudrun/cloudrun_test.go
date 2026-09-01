@@ -34,6 +34,7 @@ func TestClientRunsDistributedJobAndCleansRunObjects(t *testing.T) {
 	objects := map[string][]byte{}
 	deleted := map[string]bool{}
 	var runBody map[string]any
+	var progress []Progress
 	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
 		switch {
 		case request.Method == http.MethodPost && strings.HasPrefix(request.URL.Path, "/upload/storage/v1/"):
@@ -70,12 +71,15 @@ func TestClientRunsDistributedJobAndCleansRunObjects(t *testing.T) {
 	client := newWithHTTPClient(server.Client())
 	client.runBase, client.storageBase, client.poll = server.URL, server.URL, time.Millisecond
 	client.now = func() time.Time { return time.Unix(100, 0) }
-	result, err := client.Run(context.Background(), Request{Project: "p", Region: "r", Job: "loadtest", Bucket: "bucket", Tasks: 2, Timeout: 20 * time.Minute, StartDelay: 15 * time.Second, Script: script, BundleRoot: directory, Files: []string{helper}, Environment: map[string]string{"BASE_URL": "https://example.test"}, JobEnvironment: []string{"TOKEN"}, TraceParent: "00-0123456789abcdef0123456789abcdef-0123456789abcdef-01", TraceState: "lamplight=true", OutputLimit: 1 << 20})
+	result, err := client.Run(context.Background(), Request{Project: "p", Region: "r", Job: "loadtest", Bucket: "bucket", Tasks: 2, Timeout: 20 * time.Minute, StartDelay: 15 * time.Second, Script: script, BundleRoot: directory, Files: []string{helper}, Environment: map[string]string{"BASE_URL": "https://example.test"}, JobEnvironment: []string{"TOKEN"}, TraceParent: "00-0123456789abcdef0123456789abcdef-0123456789abcdef-01", TraceState: "lamplight=true", OutputLimit: 1 << 20, Progress: func(event Progress) { progress = append(progress, event) }})
 	if err != nil {
 		t.Fatal(err)
 	}
 	if result.Execution == "" || len(result.Shards) != 2 || result.Shards[1].Index != 1 {
 		t.Fatalf("result=%#v", result)
+	}
+	if len(progress) < 4 || progress[0].Phase != "running" || progress[len(progress)-1].Phase != "completed" || progress[len(progress)-1].CompletedShards != 2 {
+		t.Fatalf("progress=%#v", progress)
 	}
 	overrides := runBody["overrides"].(map[string]any)
 	if overrides["taskCount"] != float64(2) || overrides["timeout"] != "1200s" {
@@ -145,6 +149,48 @@ func TestClientCollectsShardEvidenceWhenCloudRunOperationFails(t *testing.T) {
 	}
 	if len(result.Shards) != 1 || result.Shards[0].Summary == nil || result.Execution == "" {
 		t.Fatalf("result=%#v", result)
+	}
+}
+
+func TestWaitOperationReportsPartialShardCompletion(t *testing.T) {
+	polls := 0
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		switch {
+		case request.Method == http.MethodGet && strings.HasSuffix(request.URL.Path, "/operations/run"):
+			polls++
+			writeJSON(t, writer, map[string]any{"name": "operations/run", "done": polls >= 3})
+		case request.Method == http.MethodHead && strings.Contains(request.URL.Path, "0.json"):
+			writer.WriteHeader(http.StatusOK)
+		case request.Method == http.MethodHead:
+			writer.WriteHeader(http.StatusNotFound)
+		default:
+			http.Error(writer, request.Method+" "+request.URL.String(), http.StatusNotFound)
+		}
+	}))
+	defer server.Close()
+
+	client := newWithHTTPClient(server.Client())
+	client.runBase, client.storageBase, client.poll = server.URL, server.URL, time.Millisecond
+	now := time.Unix(100, 0)
+	client.now = func() time.Time {
+		now = now.Add(5 * time.Second)
+		return now
+	}
+	var progress []Progress
+	_, err := client.waitOperation(context.Background(), operation{Name: "operations/run"}, "bucket", []string{"runs/id/results/0.json", "runs/id/results/1.json"}, time.Unix(100, 0), func(event Progress) {
+		progress = append(progress, event)
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	foundPartial := false
+	for _, event := range progress {
+		if event.CompletedShards == 1 && event.TotalShards == 2 {
+			foundPartial = true
+		}
+	}
+	if !foundPartial {
+		t.Fatalf("progress=%#v", progress)
 	}
 }
 

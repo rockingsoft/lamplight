@@ -72,6 +72,10 @@ func TestStoreScrapesWithAuthorization(t *testing.T) {
 
 func TestStoreQueriesPrometheusAPI(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		if request.Method != http.MethodGet {
+			http.Error(writer, "query API must use GET", http.StatusMethodNotAllowed)
+			return
+		}
 		if request.URL.Path != "/api/v1/query" || request.FormValue("query") != `sum by (result) (orders_total)` {
 			http.Error(writer, "bad query", http.StatusBadRequest)
 			return

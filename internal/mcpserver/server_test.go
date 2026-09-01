@@ -18,7 +18,7 @@ func TestServerListsReadsWritesAndRollsBack(t *testing.T) {
 	if err := os.Mkdir(base, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	configContent := []byte("project {\n  base_dir = \"./tests\"\n  output = \"json\"\n  default_target = \"compose\"\n}\nvariable \"BASE_URL\" { type = string }\ntarget \"compose\" {\n  runtime = \"docker_compose\"\n  variables = { BASE_URL = \"http://api:8080\" }\n  docker_compose { services = [\"api\"] }\n}\n")
+	configContent := []byte("project {\n  base_dir = \"./tests\"\n  default_target = \"compose\"\n}\nvariable \"BASE_URL\" { type = string }\ntarget \"compose\" {\n  runtime = \"docker_compose\"\n  variables = { BASE_URL = \"http://api:8080\" }\n  docker_compose { services = [\"api\"] }\n}\n")
 	if err := os.WriteFile(filepath.Join(root, ".lamplight"), configContent, 0o644); err != nil {
 		t.Fatal(err)
 	}
@@ -31,7 +31,14 @@ func TestServerListsReadsWritesAndRollsBack(t *testing.T) {
 	var runArgs []string
 	server := New(Options{WorkingDir: root, RunCLI: func(_ context.Context, args []string) (int, []byte, []byte) {
 		runArgs = append([]string(nil), args...)
-		return 0, []byte(`{"schema_version":"1"}`), nil
+		for index, argument := range args {
+			if argument == "--json-file" && index+1 < len(args) {
+				if err := os.WriteFile(args[index+1], []byte(`{"schema_version":1}`), 0o600); err != nil {
+					t.Fatal(err)
+				}
+			}
+		}
+		return 0, []byte("pretty result"), []byte("progress")
 	}, ObserveTrace: func(_ context.Context, request ObserveTraceRequest) (TraceEvidence, error) {
 		return TraceEvidence{TraceID: request.TraceID, Found: true, Valid: true, SpanCount: 1, Spans: []model.Span{{Name: "GET /health"}}}, nil
 	}})

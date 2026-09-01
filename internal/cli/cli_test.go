@@ -29,7 +29,7 @@ func TestValidateListAndRun(t *testing.T) {
 	if err := os.Mkdir(base, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	configBody := "project {\n  base_dir = \"tests\"\n  output = \"json\"\n}\n"
+	configBody := "project {\n  base_dir = \"tests\"\n}\n"
 	testBody := `variable "BASE_URL" { default = "` + server.URL + `" }
 test "health" {
   tags = ["smoke"]
@@ -57,8 +57,8 @@ test "health" {
 	}{
 		{"validate", []string{"validate", "-w", dir}, "Valid: 1 tests"},
 		{"list", []string{"list", "tests", "-w", dir}, "health"},
-		{"run", []string{"run", "-w", dir, "--output", "json", "health"}, `"status": "passed"`},
-		{"run flags after name", []string{"run", "-w", dir, "health", "--output", "json", "--keep-artifacts"}, `"status": "passed"`},
+		{"run", []string{"run", "-w", dir, "health"}, "PASSED"},
+		{"run flags after name", []string{"run", "-w", dir, "health", "--keep-artifacts"}, "PASSED"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			var out, stderr bytes.Buffer
@@ -69,6 +69,79 @@ test "health" {
 				t.Fatalf("output %q does not contain %q", out.String(), tc.want)
 			}
 		})
+	}
+}
+
+func TestRunAlwaysPrintsPrettyAndExportsRequestedFormats(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"ok":true}`))
+	}))
+	defer server.Close()
+	dir := t.TempDir()
+	base := filepath.Join(dir, "tests")
+	if err := os.Mkdir(base, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, ".lamplight"), []byte("project { base_dir = \"tests\" }\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	definition := fmt.Sprintf(`test "health" {
+  step "get" {
+    http_request {
+      method = "GET"
+      url    = %q
+    }
+  }
+}
+`, server.URL)
+	if err := os.WriteFile(filepath.Join(base, "health.wick"), []byte(definition), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	jsonFile := filepath.Join(dir, "result.json")
+	textFile := filepath.Join(dir, "result.txt")
+	var stdout, stderr bytes.Buffer
+	code := Main(context.Background(), []string{"run", "-w", dir, "--json-file", jsonFile, "--text-file", textFile}, IO{Out: &stdout, Err: &stderr})
+	if code != 0 {
+		t.Fatalf("code=%d stdout=%q stderr=%q", code, stdout.String(), stderr.String())
+	}
+	if !strings.Contains(stdout.String(), "PASSED") || json.Valid(stdout.Bytes()) {
+		t.Fatalf("stdout is not pretty output: %q", stdout.String())
+	}
+	if !strings.Contains(stderr.String(), "Running 1 test") {
+		t.Fatalf("stderr is missing progress: %q", stderr.String())
+	}
+	jsonResult, err := os.ReadFile(jsonFile)
+	if err != nil || !json.Valid(jsonResult) || !strings.Contains(string(jsonResult), `"status": "passed"`) {
+		t.Fatalf("json result=%q err=%v", jsonResult, err)
+	}
+	textResult, err := os.ReadFile(textFile)
+	if err != nil || !strings.HasPrefix(string(textResult), "run status=passed") {
+		t.Fatalf("text result=%q err=%v", textResult, err)
+	}
+	for _, path := range []string{jsonFile, textFile} {
+		info, err := os.Stat(path)
+		if err != nil || info.Mode().Perm() != 0o600 {
+			t.Fatalf("result file %s mode=%v err=%v", path, info.Mode().Perm(), err)
+		}
+	}
+
+	stdout.Reset()
+	stderr.Reset()
+	if code := Main(context.Background(), []string{"run", "-w", dir, "--json-file", jsonFile, "--text-file", filepath.Join(dir, ".", "result.json")}, IO{Out: &stdout, Err: &stderr}); code != 1 || stdout.Len() != 0 || !strings.Contains(stderr.String(), "must use different paths") {
+		t.Fatalf("collision code=%d stdout=%q stderr=%q", code, stdout.String(), stderr.String())
+	}
+
+	stdout.Reset()
+	stderr.Reset()
+	if code := Main(context.Background(), []string{"run", "-w", dir, "--output", "json"}, IO{Out: &stdout, Err: &stderr}); code != 0 || !json.Valid(stdout.Bytes()) || stderr.Len() != 0 {
+		t.Fatalf("legacy output code=%d stdout=%q stderr=%q", code, stdout.String(), stderr.String())
+	}
+
+	stdout.Reset()
+	stderr.Reset()
+	if code := Main(context.Background(), []string{"run", "-w", dir, "--output", "json", "--json-file", jsonFile}, IO{Out: &stdout, Err: &stderr}); code != 1 || stdout.Len() != 0 || !strings.Contains(stderr.String(), "cannot be combined") {
+		t.Fatalf("legacy output collision code=%d stdout=%q stderr=%q", code, stdout.String(), stderr.String())
 	}
 }
 
@@ -84,7 +157,7 @@ func TestRunIncludesOrExcludesRepeatedSelectors(t *testing.T) {
 	if err := os.Mkdir(base, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(dir, ".lamplight"), []byte("project {\n  base_dir = \"tests\"\n  output = \"json\"\n}\n"), 0o600); err != nil {
+	if err := os.WriteFile(filepath.Join(dir, ".lamplight"), []byte("project {\n  base_dir = \"tests\"\n}\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	writeTests := func(file, body string) {
@@ -118,14 +191,19 @@ func TestRunIncludesOrExcludesRepeatedSelectors(t *testing.T) {
 		{name: "name excluded with trailing flag", args: []string{"slow-test", "--exclude"}, want: []string{"other-test", "smoke-test"}},
 	} {
 		t.Run(test.name, func(t *testing.T) {
-			args := append([]string{"run", "-w", dir}, test.args...)
+			resultFile := filepath.Join(t.TempDir(), "result.json")
+			args := append([]string{"run", "-w", dir, "--json-file", resultFile}, test.args...)
 			var stdout, stderr bytes.Buffer
 			if code := Main(context.Background(), args, IO{Out: &stdout, Err: &stderr}); code != 0 {
 				t.Fatalf("code=%d stderr=%s stdout=%s", code, stderr.String(), stdout.String())
 			}
 			var result model.RunResult
-			if err := json.Unmarshal(stdout.Bytes(), &result); err != nil {
-				t.Fatalf("decode result: %v\n%s", err, stdout.String())
+			encoded, err := os.ReadFile(resultFile)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := json.Unmarshal(encoded, &result); err != nil {
+				t.Fatalf("decode result: %v\n%s", err, encoded)
 			}
 			got := make([]string, 0, len(result.Tests))
 			for _, executed := range result.Tests {
@@ -153,7 +231,6 @@ func TestRunUsesDefaultLocalTargetVariables(t *testing.T) {
 	}
 	configBody := `project {
   base_dir = "tests"
-  output = "json"
   default_target = "configured_local"
 }
 variable "BASE_URL" { type = string }
@@ -181,7 +258,7 @@ target "configured_local" {
 	if code := Main(context.Background(), []string{"run", "-w", dir, "health"}, IO{Out: &out, Err: &stderr}); code != 0 {
 		t.Fatalf("code=%d stderr=%s out=%s", code, stderr.String(), out.String())
 	}
-	if !strings.Contains(out.String(), `"status": "passed"`) {
+	if !strings.Contains(out.String(), "PASSED") {
 		t.Fatalf("output: %s", out.String())
 	}
 }
@@ -198,7 +275,6 @@ func TestRunFallsBackToImplicitLocalWhenTargetsExistWithoutDefault(t *testing.T)
 	}
 	configBody := `project {
   base_dir = "tests"
-  output = "json"
 }
 variable "BASE_URL" { type = string }
 target "compose" { runtime = "docker_compose" }
