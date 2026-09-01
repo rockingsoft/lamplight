@@ -85,7 +85,6 @@ Exactly one `project` block is required in `.lamplight`.
 ```hcl
 project {
   base_dir      = "./lamplight"
-  output        = "pretty"
   default_target = "compose"
 
   http_client {
@@ -224,7 +223,6 @@ Properties:
 | Property | Required | Type | Default | Runtime expressions | Description |
 | --- | --- | --- | --- | --- | --- |
 | `base_dir` | yes | literal string | — | no | Directory recursively searched for Lamplight DSL files. Resolved relative to `.lamplight`. |
-| `output` | no | literal string enum | `"pretty"` | no | One of `pretty`, `text`, or `json`. |
 | `default_target` | no | literal string | `local` | no | Named target used by `run` when `--target` is omitted. |
 
 `base_dir` must exist and be a directory when the project is loaded. It cannot
@@ -1027,7 +1025,8 @@ Options:
 | `--file FILE` | Select tests declared in a file relative to `project.base_dir`. Repeat to match any supplied file. |
 | `--exclude` | Invert an explicit test-name, file, or tag selector. |
 | `--var NAME=VALUE` | Override a variable. May be repeated; duplicate names are rejected. |
-| `--output FORMAT` | Override `project.output` with `pretty`, `text`, or `json`. |
+| `--json-file FILE` | Write the final versioned JSON result to `FILE`. |
+| `--text-file FILE` | Write the final deterministic ANSI-free text result to `FILE`. |
 | `--fail-fast` | Stop after the first failed or errored test and mark the remaining tests as skipped. |
 | `--keep-artifacts` | Preserve artifacts after a successful run. |
 | `--artifacts-dir DIR` | Select the parent directory for run artifacts. |
@@ -1044,8 +1043,9 @@ and trigger starts or completes. In an interactive terminal, in-flight triggers
 and trace polling use an updating spinner. Each trace observation reports its
 attempt number, total spans received, and matching span count per check. With
 redirected stderr the same transitions are emitted as append-only lines. The
-final selected output format is written to stdout, so JSON and text output
-remain machine-readable.
+final pretty summary is always written to stdout. `--json-file` and
+`--text-file` write machine-readable results atomically with mode `0600`; both
+may be supplied in the same run but must use different paths.
 
 ### 13.6 `lamplight migrate tracetest`
 

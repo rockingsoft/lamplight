@@ -13,7 +13,7 @@ func TestLoadProjectParsesAndValidatesFixture(t *testing.T) {
 	if len(diagnostics) != 0 {
 		t.Fatalf("LoadProject diagnostics: %#v", diagnostics)
 	}
-	if project.Output != "json" || project.Datasource == nil || len(project.Variables) != 2 || len(project.Tests) != 1 {
+	if project.Datasource == nil || len(project.Variables) != 2 || len(project.Tests) != 1 {
 		t.Fatalf("unexpected project: %#v", project)
 	}
 	test := project.Tests["checkout"]

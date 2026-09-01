@@ -71,7 +71,7 @@ jobs:
           go build -o "$RUNNER_TEMP/lamplight" ./cmd/lamplight
           "$RUNNER_TEMP/lamplight" run \
             --working-dir testdata/k6-smoke \
-            --output json > "$RUNNER_TEMP/k6-smoke-result.json"
+            --json-file "$RUNNER_TEMP/k6-smoke-result.json"
           jq -e '
             .schema_version == 1 and
             .status == "passed" and

@@ -22,7 +22,7 @@ func TestLoadResolvesBaseDirAndDefaults(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if config.BaseDir != filepath.Join(realDir, "tests") || config.Output != "pretty" || config.HTTPClient.Timeout.Seconds() != 30 {
+	if config.BaseDir != filepath.Join(realDir, "tests") || config.HTTPClient.Timeout.Seconds() != 30 {
 		t.Fatalf("unexpected config: %#v", config)
 	}
 }

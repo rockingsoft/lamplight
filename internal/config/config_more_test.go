@@ -94,11 +94,10 @@ func TestLoadConfigurationTable(t *testing.T) {
 	tests := []struct {
 		name, source       string
 		wantNil, wantDiags bool
-		output             string
 	}{
-		{name: "full client", source: "project {\n  base_dir = \"tests\"\n  output = \"text\"\n  http_client {\n    timeout = duration(\"2s\")\n    follow_redirects = false\n    max_request_body_bytes = 123\n    max_response_body_bytes = 456\n    proxy = \"http://proxy.test\"\n    tls_skip_verify = true\n  }\n}\ndatasource \"tempo\" { endpoint = \"http://tempo.test\" }\n", wantDiags: true, output: "text"},
-		{name: "invalid output and base", source: "project {\n  base_dir = \"missing\"\n  output = \"xml\"\n}\n", wantDiags: true},
-		{name: "runtime base and proxy", source: "project {\n  base_dir = var.BASE\n  output = \"json\"\n  http_client {\n    proxy = var.PROXY\n  }\n}\n", wantDiags: true, output: "json"},
+		{name: "full client", source: "project {\n  base_dir = \"tests\"\n  http_client {\n    timeout = duration(\"2s\")\n    follow_redirects = false\n    max_request_body_bytes = 123\n    max_response_body_bytes = 456\n    proxy = \"http://proxy.test\"\n    tls_skip_verify = true\n  }\n}\ndatasource \"tempo\" { endpoint = \"http://tempo.test\" }\n", wantDiags: true},
+		{name: "removed output", source: "project {\n  base_dir = \"tests\"\n  output = \"json\"\n}\n", wantDiags: true},
+		{name: "runtime base and proxy", source: "project {\n  base_dir = var.BASE\n  http_client {\n    proxy = var.PROXY\n  }\n}\n", wantDiags: true},
 		{name: "invalid literals", source: "project {\n  base_dir = \".\"\n  http_client {\n    timeout = 0\n    follow_redirects = \"yes\"\n    max_request_body_bytes = 1.5\n    max_response_body_bytes = 0\n    proxy = 42\n    tls_skip_verify = \"yes\"\n  }\n}\n", wantDiags: true},
 		{name: "parse error", source: `project { base_dir = `, wantNil: true, wantDiags: true},
 		{name: "no project", source: "datasource \"tempo\" {\n  endpoint = \"http://tempo.test\"\n}\n", wantNil: true, wantDiags: true},
@@ -114,9 +113,6 @@ func TestLoadConfigurationTable(t *testing.T) {
 			got, diags := Load(Options{WorkingDir: dir})
 			if (got == nil) != tt.wantNil || (len(diags) > 0) != tt.wantDiags {
 				t.Fatalf("config=%#v diagnostics=%#v", got, diags)
-			}
-			if got != nil && tt.output != "" && got.Output != tt.output {
-				t.Fatalf("output=%q", got.Output)
 			}
 		})
 	}

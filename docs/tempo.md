@@ -240,7 +240,7 @@ Use this sequence when validating a deployment:
 2. Confirm the configured base endpoint serves `/ready` with a 2xx response.
 3. Run `lamplight validate` to check HCL without making network calls.
 4. Run one response-only test to isolate application connectivity.
-5. Run one traced test with `--output json --keep-artifacts`.
+5. Run one traced test with `--json-file result.json --keep-artifacts`.
 6. Inspect the reported step trace ID and confirm the same ID is queryable from
    Tempo.
 7. Verify resource and span attribute names against the normalized JSON rather
@@ -250,7 +250,7 @@ Example commands:
 
 ```sh
 lamplight validate
-lamplight run traced_healthcheck --output json --keep-artifacts
+lamplight run traced_healthcheck --json-file result.json --keep-artifacts
 ```
 
 ## Troubleshooting

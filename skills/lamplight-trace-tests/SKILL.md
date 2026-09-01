@@ -39,7 +39,7 @@ Read [references/lamplight-authoring.md](references/lamplight-authoring.md) befo
 5. Run one selected test with JSON output and retained artifacts when execution is authorized:
 
    ```sh
-   lamplight run <test-name> --output json --keep-artifacts
+   lamplight run <test-name> --json-file result.json --keep-artifacts
    ```
 
 6. Compare predicates with normalized observed evidence. Do not guess attribute names or coerce numeric and boolean attributes into strings.

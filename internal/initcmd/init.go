@@ -9,7 +9,6 @@ import (
 
 const config = `project {
   base_dir = "./lamplight"
-  output   = "pretty"
 }
 `
 

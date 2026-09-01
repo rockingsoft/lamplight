@@ -385,7 +385,18 @@ func (s *service) run(ctx context.Context, _ *mcp.CallToolRequest, in runInput) 
 	if in.Exclude && selectorKinds == 0 {
 		return toolError("exclude requires a test, files, or tags selector", runOutput{}), runOutput{}, nil
 	}
-	args := []string{"run", "--output", "json"}
+	jsonFile, err := os.CreateTemp("", "lamplight-mcp-run-*.json")
+	if err != nil {
+		return nil, runOutput{}, fmt.Errorf("create temporary run result: %w", err)
+	}
+	jsonPath := jsonFile.Name()
+	if err := jsonFile.Close(); err != nil {
+		_ = os.Remove(jsonPath)
+		return nil, runOutput{}, fmt.Errorf("close temporary run result: %w", err)
+	}
+	_ = os.Remove(jsonPath)
+	defer func() { _ = os.Remove(jsonPath) }()
+	args := []string{"run", "--json-file", jsonPath}
 	if s.options.ConfigPath != "" {
 		args = append(args, "--config", s.options.ConfigPath)
 	}
@@ -413,10 +424,10 @@ func (s *service) run(ctx context.Context, _ *mcp.CallToolRequest, in runInput) 
 	if s.options.RunCLI == nil {
 		return nil, runOutput{}, fmt.Errorf("MCP server has no CLI runner configured")
 	}
-	exitCode, stdout, stderr := s.options.RunCLI(ctx, args)
+	exitCode, _, stderr := s.options.RunCLI(ctx, args)
 	out := runOutput{ExitCode: exitCode, Stderr: string(stderr)}
-	if json.Valid(stdout) {
-		_ = json.Unmarshal(stdout, &out.Result)
+	if encoded, readErr := os.ReadFile(jsonPath); readErr == nil && json.Valid(encoded) {
+		_ = json.Unmarshal(encoded, &out.Result)
 	}
 	if exitCode == 1 {
 		return toolError("Lamplight run ended with a technical error", out), out, nil

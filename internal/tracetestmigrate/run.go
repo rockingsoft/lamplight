@@ -346,7 +346,7 @@ func writeConfig(ctx context.Context, outputDir string, datasource *datasourceIm
 
 func configContents(datasource *datasourceImport) string {
 	var out strings.Builder
-	out.WriteString("project {\n  base_dir = \"./lamplight\"\n  output   = \"pretty\"\n}\n")
+	out.WriteString("project {\n  base_dir = \"./lamplight\"\n}\n")
 	if datasource != nil {
 		fmt.Fprintf(&out, "\ndatasource %q {\n  endpoint = %q\n", datasource.Kind, datasource.Endpoint)
 		if datasource.ObservationWindow > 0 {

@@ -111,7 +111,7 @@ func TestMainHelp(t *testing.T) {
 		{[]string{"--help"}, []string{"Usage:", "Commands:", "run [TEST_NAME]"}},
 		{[]string{"-h"}, []string{"Lamplight runs trace-based integration tests."}},
 		{[]string{"help"}, []string{"migrate tracetest", "help [COMMAND]"}},
-		{[]string{"help", "run"}, []string{"--var NAME=VALUE", "--keep-artifacts", "--fail-fast"}},
+		{[]string{"help", "run"}, []string{"--var NAME=VALUE", "--json-file FILE", "--text-file FILE", "--keep-artifacts", "--fail-fast"}},
 		{[]string{"run", "health", "--help"}, []string{"lamplight run [options] [TEST_NAME]"}},
 		{[]string{"list", "tests", "-h"}, []string{"datasource requirements", "--config FILE"}},
 		{[]string{"migrate", "tracetest", "--help"}, []string{"Arguments:", "--output-dir DIR"}},
@@ -170,7 +170,7 @@ func TestMainMigratesTracetestProject(t *testing.T) {
 
 func TestVerboseIsGlobalAndWritesDebugOnlyToStderr(t *testing.T) {
 	dir := t.TempDir()
-	if err := os.WriteFile(filepath.Join(dir, ".lamplight"), []byte("project {\n  base_dir = \".\"\n  output = \"json\"\n}\n"), 0o600); err != nil {
+	if err := os.WriteFile(filepath.Join(dir, ".lamplight"), []byte("project {\n  base_dir = \".\"\n}\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	var stdout, stderr bytes.Buffer
@@ -322,7 +322,7 @@ func TestRunReportsSelectionAndVariableErrors(t *testing.T) {
 	if err := os.Mkdir(base, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	config := []byte("project { base_dir = \"tests\" output = \"json\" }\n")
+	config := []byte("project { base_dir = \"tests\" }\n")
 	if err := os.WriteFile(filepath.Join(dir, ".lamplight"), config, 0o600); err != nil {
 		t.Fatal(err)
 	}
@@ -351,7 +351,7 @@ func TestRunContinuesByDefaultAndSupportsFailFastWithCleanJSON(t *testing.T) {
 	if err := os.Mkdir(testsDir, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(dir, ".lamplight"), []byte("project {\n  base_dir = \"tests\"\n  output = \"json\"\n}\n"), 0o600); err != nil {
+	if err := os.WriteFile(filepath.Join(dir, ".lamplight"), []byte("project {\n  base_dir = \"tests\"\n}\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	definitions := map[string]string{
@@ -374,19 +374,24 @@ func TestRunContinuesByDefaultAndSupportsFailFastWithCleanJSON(t *testing.T) {
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			var stdout, stderr bytes.Buffer
-			args := append([]string{"run", "-w", dir, "--output", "json"}, test.flags...)
+			resultFile := filepath.Join(t.TempDir(), "result.json")
+			args := append([]string{"run", "-w", dir, "--json-file", resultFile}, test.flags...)
 			if code := Main(context.Background(), args, IO{Out: &stdout, Err: &stderr}); code != 1 {
 				t.Fatalf("code=%d stdout=%q stderr=%q", code, stdout.String(), stderr.String())
 			}
+			encoded, err := os.ReadFile(resultFile)
+			if err != nil {
+				t.Fatal(err)
+			}
 			var run model.RunResult
-			if err := json.Unmarshal(stdout.Bytes(), &run); err != nil {
-				t.Fatalf("decode output: %v\nstdout=%s\nstderr=%s", err, stdout.String(), stderr.String())
+			if err := json.Unmarshal(encoded, &run); err != nil {
+				t.Fatalf("decode output: %v\njson=%s\nstdout=%s\nstderr=%s", err, encoded, stdout.String(), stderr.String())
 			}
 			if len(run.Tests) != 2 || run.Tests[0].Status != model.StatusError || run.Tests[1].Status != test.wantSecond {
 				t.Fatalf("tests=%#v\nstdout=%s\nstderr=%s", run.Tests, stdout.String(), stderr.String())
 			}
-			if stderr.Len() != 0 {
-				t.Errorf("JSON output must not include pretty progress on stderr: %q", stderr.String())
+			if !strings.Contains(stderr.String(), "Running 2 tests") {
+				t.Errorf("pretty progress missing from stderr: %q", stderr.String())
 			}
 		})
 	}
@@ -417,7 +422,6 @@ func TestRunPrefersExplicitPrometheusMetricsOverOTLPDatasource(t *testing.T) {
 	directory := t.TempDir()
 	if err := os.WriteFile(filepath.Join(directory, ".lamplight"), []byte(fmt.Sprintf(`project {
   base_dir = "."
-  output = "json"
 }
 datasource "otlp" {
   endpoint = %q
@@ -450,12 +454,17 @@ metrics "prometheus" {
 		t.Fatal(err)
 	}
 
+	resultFile := filepath.Join(t.TempDir(), "result.json")
 	var stdout, stderr bytes.Buffer
-	if code := Main(context.Background(), []string{"run", "-w", directory}, IO{Out: &stdout, Err: &stderr}); code != 0 {
+	if code := Main(context.Background(), []string{"run", "-w", directory, "--json-file", resultFile}, IO{Out: &stdout, Err: &stderr}); code != 0 {
 		t.Fatalf("code=%d stdout=%s stderr=%s", code, stdout.String(), stderr.String())
 	}
+	encoded, err := os.ReadFile(resultFile)
+	if err != nil {
+		t.Fatal(err)
+	}
 	var run model.RunResult
-	if err := json.Unmarshal(stdout.Bytes(), &run); err != nil || run.Status != model.StatusPassed {
+	if err := json.Unmarshal(encoded, &run); err != nil || run.Status != model.StatusPassed {
 		t.Fatalf("run=%#v decodeErr=%v stdout=%s stderr=%s", run, err, stdout.String(), stderr.String())
 	}
 }

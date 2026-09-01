@@ -17,7 +17,6 @@ Minimal root configuration with a direct Tempo-compatible backend:
 ```hcl
 project {
   base_dir = "./lamplight"
-  output   = "pretty"
 }
 
 datasource "tempo" {
@@ -166,7 +165,7 @@ lamplight validate
 Execute one selected test and retain normalized evidence:
 
 ```sh
-lamplight run create_order --output json --keep-artifacts
+lamplight run create_order --json-file result.json --keep-artifacts
 ```
 
 If a predicate does not match:

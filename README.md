@@ -87,7 +87,6 @@ The generated project configuration is intentionally small:
 ```hcl
 project {
   base_dir = "./lamplight"
-  output   = "pretty"
 }
 ```
 
@@ -333,15 +332,16 @@ lamplight list tests
 lamplight fmt
 ```
 
-Choose machine-readable output for CI or another tool:
+The console always uses the human-readable progress reporter. Export a final
+machine-readable result to a file for CI or another tool:
 
 ```sh
-lamplight run --output text
-lamplight run --output json
+lamplight run --text-file ./result.txt
+lamplight run --json-file ./result.json
 ```
 
-Output formats are `pretty` for interactive use, deterministic `text` without
-ANSI escapes, and versioned `json` described by
+Both export flags may be used together. Text output is deterministic and has no
+ANSI escapes. JSON is versioned and described by
 [`schemas/run-result-v1.schema.json`](schemas/run-result-v1.schema.json).
 
 Exit codes are stable:
