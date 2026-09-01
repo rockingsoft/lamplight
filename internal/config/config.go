@@ -120,7 +120,7 @@ func Load(options Options) (*Config, []model.Diagnostic) {
 		return nil, diags
 	}
 	projectContent, projectDiags := project.Body.Content(&hcl.BodySchema{
-		Attributes: []hcl.AttributeSchema{{Name: "base_dir", Required: true}, {Name: "default_target"}},
+		Attributes: []hcl.AttributeSchema{{Name: "base_dir", Required: true}, {Name: "output"}, {Name: "default_target"}},
 		Blocks:     []hcl.BlockHeaderSchema{{Type: "http_client"}},
 	})
 	diags = append(diags, diagnostic.FromHCL(projectDiags, diagnostic.CodeSchema)...)
@@ -141,6 +141,13 @@ func Load(options Options) (*Config, []model.Diagnostic) {
 		base, _ = filepath.Abs(base)
 		if info, err := os.Stat(base); err != nil || !info.IsDir() {
 			diags = append(diags, diagnostic.Error(diagnostic.CodePath, fmt.Sprintf("project.base_dir %q does not exist or is not a directory", base), baseExpr.Range(), "create the directory or correct base_dir"))
+		}
+	}
+	if attr, ok := projectContent.Attributes["output"]; ok {
+		legacyOutput, legacyDiags := literalString(attr.Expr)
+		diags = append(diags, legacyDiags...)
+		if legacyOutput != "" && legacyOutput != "pretty" && legacyOutput != "text" && legacyOutput != "json" {
+			diags = append(diags, diagnostic.Error(diagnostic.CodeConfig, fmt.Sprintf("project.output must be pretty, text, or json; got %q", legacyOutput), attr.Range, "remove project.output and use a result-file flag when machine-readable output is needed"))
 		}
 	}
 	defaultTarget := ""
