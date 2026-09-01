@@ -478,6 +478,16 @@ func TestRunProgressReportsTraceWaitImmediately(t *testing.T) {
 	}
 }
 
+func TestRunProgressShowsCloudRunShardProgress(t *testing.T) {
+	var output bytes.Buffer
+	progress := newRunProgress(&output, result.NewRedactor())
+	progress.Report(engine.ProgressEvent{Kind: engine.ProgressTriggerStarted, Trigger: model.TriggerK6})
+	progress.Report(engine.ProgressEvent{Kind: engine.ProgressRemoteTrigger, RemotePhase: "running", RemoteExecution: "projects/p/locations/r/operations/run-1", CompletedShards: 2, TotalShards: 4, Elapsed: 45 * time.Second})
+	if got := output.String(); !strings.Contains(got, "Running Cloud Run k6 · 2/4 shards completed · elapsed 45s · run-1") {
+		t.Fatalf("progress=%q", got)
+	}
+}
+
 func TestRunProgressShowsTriggerResultAndSpanMatches(t *testing.T) {
 	var output bytes.Buffer
 	progress := newRunProgress(&output, result.NewRedactor())

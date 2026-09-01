@@ -28,6 +28,7 @@ type commandFunc func(context.Context, string, ...string) *exec.Cmd
 
 type Executor struct {
 	HTTP     model.HTTPExecutor
+	Progress func(k6cloudrun.Progress)
 	command  commandFunc
 	lookPath func(string) (string, error)
 	cloudRun cloudRunExecutor
@@ -234,7 +235,7 @@ func (e *Executor) executeK6CloudRun(ctx context.Context, request model.TriggerR
 	cloudRequest := k6cloudrun.Request{
 		Project: stringValue(executor["project"]), Region: stringValue(executor["region"]), Job: stringValue(executor["job"]), Bucket: stringValue(executor["bucket"]),
 		Tasks: tasks, Timeout: timeout, StartDelay: startDelay, Script: stringAttr(request, "script"), BundleRoot: stringAttr(request, "bundle_root"), Files: files,
-		Environment: environment, JobEnvironment: jobEnvironment, Arguments: arguments, OutputLimit: limit,
+		Environment: environment, JobEnvironment: jobEnvironment, Arguments: arguments, OutputLimit: limit, Progress: e.Progress,
 	}
 	if trace != nil {
 		cloudRequest.TraceParent, cloudRequest.TraceState = trace.TraceParent(), trace.TraceState

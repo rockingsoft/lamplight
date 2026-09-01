@@ -42,6 +42,16 @@ type Request struct {
 	Arguments                    []string
 	TraceParent, TraceState      string
 	OutputLimit                  int64
+	Progress                     func(Progress)
+}
+
+type Progress struct {
+	Phase           string
+	Execution       string
+	LogURI          string
+	CompletedShards int
+	TotalShards     int
+	Elapsed         time.Duration
 }
 
 type Result struct {
@@ -129,6 +139,7 @@ func newWithHTTPClient(httpClient *http.Client) *Client {
 }
 
 func (c *Client) Run(ctx context.Context, request Request) (result Result, runErr error) {
+	startedAt := c.now()
 	if err := validateRequest(request); err != nil {
 		return result, err
 	}
@@ -193,7 +204,8 @@ func (c *Client) Run(ctx context.Context, request Request) (result Result, runEr
 	if err := c.jsonRequest(ctx, http.MethodPost, c.runBase+"/v2/"+jobName+":run", body, &started); err != nil {
 		return result, fmt.Errorf("start Cloud Run Job: %w", err)
 	}
-	finished, operationErr := c.waitOperation(ctx, started)
+	reportProgress(request.Progress, Progress{Phase: "running", Execution: started.Name, TotalShards: request.Tasks})
+	finished, operationErr := c.waitOperation(ctx, started, request.Bucket, resultObjects, startedAt, request.Progress)
 	executionPayload := finished.Response
 	if len(executionPayload) == 0 {
 		executionPayload = finished.Metadata
@@ -230,6 +242,7 @@ func (c *Client) Run(ctx context.Context, request Request) (result Result, runEr
 			return result, fmt.Errorf("decode Cloud Run shard %d result: %w", index, err)
 		}
 		result.Shards = append(result.Shards, shard)
+		reportProgress(request.Progress, Progress{Phase: "collecting", Execution: result.Execution, LogURI: result.LogURI, CompletedShards: index + 1, TotalShards: request.Tasks, Elapsed: c.now().Sub(startedAt)})
 	}
 	sort.Slice(result.Shards, func(i, j int) bool { return result.Shards[i].Index < result.Shards[j].Index })
 	for _, shard := range result.Shards {
@@ -250,6 +263,7 @@ func (c *Client) Run(ctx context.Context, request Request) (result Result, runEr
 	if completed.FailedCount > 0 || completed.CancelledCount > 0 {
 		return result, fmt.Errorf("execution on Cloud Run completed with %d failed and %d cancelled tasks", completed.FailedCount, completed.CancelledCount)
 	}
+	reportProgress(request.Progress, Progress{Phase: "completed", Execution: result.Execution, LogURI: result.LogURI, CompletedShards: request.Tasks, TotalShards: request.Tasks, Elapsed: c.now().Sub(startedAt)})
 	return result, nil
 }
 
@@ -400,7 +414,10 @@ func formatDuration(value time.Duration) string {
 	return strconv.FormatFloat(value.Seconds(), 'f', -1, 64) + "s"
 }
 
-func (c *Client) waitOperation(ctx context.Context, current operation) (operation, error) {
+func (c *Client) waitOperation(ctx context.Context, current operation, bucket string, resultObjects []string, startedAt time.Time, progress func(Progress)) (operation, error) {
+	lastReportedAt := startedAt
+	lastCheckedAt := time.Time{}
+	lastCompleted := -1
 	for !current.Done {
 		select {
 		case <-ctx.Done():
@@ -410,11 +427,46 @@ func (c *Client) waitOperation(ctx context.Context, current operation) (operatio
 		if err := c.jsonRequest(ctx, http.MethodGet, c.runBase+"/v2/"+current.Name, nil, &current); err != nil {
 			return current, err
 		}
+		now := c.now()
+		if current.Done || lastCheckedAt.IsZero() || now.Sub(lastCheckedAt) >= 5*time.Second {
+			completed := c.completedResults(ctx, bucket, resultObjects)
+			lastCheckedAt = now
+			if completed != lastCompleted || now.Sub(lastReportedAt) >= 15*time.Second {
+				reportProgress(progress, Progress{Phase: "running", Execution: current.Name, CompletedShards: completed, TotalShards: len(resultObjects), Elapsed: now.Sub(startedAt)})
+				lastCompleted, lastReportedAt = completed, now
+			}
+		}
 	}
 	if current.Error != nil {
 		return current, fmt.Errorf("google API error %d: %s", current.Error.Code, current.Error.Message)
 	}
 	return current, nil
+}
+
+func (c *Client) completedResults(ctx context.Context, bucket string, objects []string) int {
+	completed := 0
+	for _, object := range objects {
+		endpoint := fmt.Sprintf("%s/storage/v1/b/%s/o/%s?alt=media", c.storageBase, url.PathEscape(bucket), url.PathEscape(object))
+		req, err := http.NewRequestWithContext(ctx, http.MethodHead, endpoint, nil)
+		if err != nil {
+			continue
+		}
+		response, err := c.http.Do(req)
+		if err != nil {
+			continue
+		}
+		_ = response.Body.Close()
+		if response.StatusCode >= 200 && response.StatusCode < 300 {
+			completed++
+		}
+	}
+	return completed
+}
+
+func reportProgress(callback func(Progress), progress Progress) {
+	if callback != nil {
+		callback(progress)
+	}
 }
 
 func (c *Client) upload(ctx context.Context, bucket, object, contentType string, data []byte) error {

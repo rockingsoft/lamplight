@@ -26,6 +26,12 @@ type ProgressEvent struct {
 	RetryError        string
 	Checks            []ProgressCheck
 	StatusCode        int
+	RemotePhase       string
+	RemoteExecution   string
+	RemoteLogURI      string
+	CompletedShards   int
+	TotalShards       int
+	Elapsed           time.Duration
 }
 
 type ProgressCheck struct {
@@ -48,6 +54,7 @@ const (
 	ProgressStepCompleted       ProgressEventKind = "step_completed"
 	ProgressTriggerStarted      ProgressEventKind = "trigger_started"
 	ProgressTriggerCompleted    ProgressEventKind = "trigger_completed"
+	ProgressRemoteTrigger       ProgressEventKind = "remote_trigger"
 	ProgressTracePolling        ProgressEventKind = "trace_polling"
 	ProgressTraceObserved       ProgressEventKind = "trace_observed"
 	ProgressMetricPolling       ProgressEventKind = "metric_polling"

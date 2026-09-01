@@ -3,6 +3,7 @@ package cli
 import (
 	"fmt"
 	"io"
+	"time"
 
 	"lamplight/internal/engine"
 	"lamplight/internal/model"
@@ -34,11 +35,17 @@ func (p *ciRunProgress) Report(event engine.ProgressEvent) {
 		if _, terminal := terminalCheckStatus(event.Checks); terminal {
 			p.checks = append([]engine.ProgressCheck(nil), event.Checks...)
 		}
+	case engine.ProgressRemoteTrigger:
+		writef(p.writer, "    %s\n", p.redactor.RedactString(remoteCIProgressText(event)))
 	case engine.ProgressTestCompleted:
 		p.index++
 		writef(p.writer, "  %s %d %s %s\n", p.format.StatusMarker(event.Status), p.index, p.redactor.RedactString(event.TestName), p.format.Muted("("+prettyProgressDuration(event.DurationMS)+")"))
 		p.writeFailures()
 	}
+}
+
+func remoteCIProgressText(event engine.ProgressEvent) string {
+	return fmt.Sprintf("Cloud Run k6 %s · %d/%d shards completed · elapsed %s", event.RemotePhase, event.CompletedShards, event.TotalShards, event.Elapsed.Round(time.Second))
 }
 
 func (p *ciRunProgress) writeFailures() {

@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"strings"
 	"testing"
+	"time"
 
 	"lamplight/internal/engine"
 	"lamplight/internal/model"
@@ -33,6 +34,7 @@ func TestCIRunProgressUsesStablePlaywrightStyleLines(t *testing.T) {
 	progress := newCIRunProgress(&output, result.NewRedactor())
 	progress.Report(engine.ProgressEvent{Kind: engine.ProgressRunStarted, TestsTotal: 2})
 	progress.Report(engine.ProgressEvent{Kind: engine.ProgressTestStarted, TestName: "import"})
+	progress.Report(engine.ProgressEvent{Kind: engine.ProgressRemoteTrigger, RemotePhase: "running", CompletedShards: 1, TotalShards: 4, Elapsed: 30 * time.Second})
 	progress.Report(engine.ProgressEvent{Kind: engine.ProgressTraceObserved, Checks: []engine.ProgressCheck{
 		{Name: "worker called", Status: model.StatusFailed, Reason: "count_not_satisfied", Rule: model.QuantityRule{Kind: "at_least", Value: 1}},
 	}})
@@ -41,7 +43,7 @@ func TestCIRunProgressUsesStablePlaywrightStyleLines(t *testing.T) {
 	progress.Report(engine.ProgressEvent{Kind: engine.ProgressTestCompleted, TestName: "list", Status: model.StatusPassed, DurationMS: 50})
 
 	text := output.String()
-	for _, expected := range []string{"Running 2 tests", "✗ 1 import (1.2s)", "worker called", "Expected at least 1 matching spans", "✓ 2 list (0.1s)"} {
+	for _, expected := range []string{"Running 2 tests", "Cloud Run k6 running · 1/4 shards completed · elapsed 30s", "✗ 1 import (1.2s)", "worker called", "Expected at least 1 matching spans", "✓ 2 list (0.1s)"} {
 		if !strings.Contains(text, expected) {
 			t.Errorf("CI progress missing %q:\n%s", expected, text)
 		}

@@ -152,7 +152,7 @@ targets. It uses elevated eBPF privileges and is intentionally unsupported for
 local macOS and Windows processes. See the [configuration reference](docs/reference.md#23-zero-code-instrumentation)
 for runtime requirements and Kubernetes permissions.
 
-Lamplight prints live trigger, trace-polling, and metric-polling progress. A run continues after
+Lamplight prints live trigger, remote Cloud Run shard, trace-polling, and metric-polling progress. A run continues after
 a failed test by default so it can report the complete result; use
 `--fail-fast` when an early exit is more useful.
 

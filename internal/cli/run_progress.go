@@ -71,6 +71,8 @@ func (p *runProgress) Report(event engine.ProgressEvent) {
 		p.replaceLine(p.stepLine, "  %s Step: %s %s", p.formatter.StatusMarker(event.Status), p.redactor.RedactString(event.StepName), p.formatter.Muted(fmt.Sprintf("· %d ms", event.DurationMS)))
 	case engine.ProgressTriggerStarted:
 		p.startSpinner("    ", fmt.Sprintf("Running %s trigger...", triggerLabel(event.Trigger)))
+	case engine.ProgressRemoteTrigger:
+		p.updateSpinner(p.remoteProgressText(event))
 	case engine.ProgressTriggerCompleted:
 		text := fmt.Sprintf("%s trigger %s", strings.ToUpper(triggerLabel(event.Trigger)), statusWord(event.Status))
 		if event.StatusCode > 0 {
@@ -97,6 +99,21 @@ func (p *runProgress) Report(event engine.ProgressEvent) {
 			p.updateSpinner(fmt.Sprintf("Waiting for metric checks · %d %s received · attempt %d", event.MetricCount, plural(event.MetricCount, "series", "series"), event.Attempt))
 		}
 	}
+}
+
+func (p *runProgress) remoteProgressText(event engine.ProgressEvent) string {
+	phase := "Running Cloud Run k6"
+	if event.RemotePhase == "collecting" {
+		phase = "Collecting Cloud Run results"
+	} else if event.RemotePhase == "completed" {
+		phase = "Cloud Run k6 completed"
+	}
+	text := fmt.Sprintf("%s · %d/%d shards completed · elapsed %s", phase, event.CompletedShards, event.TotalShards, event.Elapsed.Round(time.Second))
+	if event.RemoteExecution != "" {
+		parts := strings.Split(event.RemoteExecution, "/")
+		text += " · " + p.redactor.RedactString(parts[len(parts)-1])
+	}
+	return text
 }
 
 func (p *runProgress) writeFailedChecks(checks []engine.ProgressCheck) {

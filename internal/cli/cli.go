@@ -32,6 +32,7 @@ import (
 	"lamplight/internal/httpstep"
 	"lamplight/internal/initcmd"
 	"lamplight/internal/instrumentation"
+	"lamplight/internal/k6cloudrun"
 	"lamplight/internal/mcpserver"
 	metricsprometheus "lamplight/internal/metricssource/prometheus"
 	"lamplight/internal/model"
@@ -534,7 +535,11 @@ func run(ctx context.Context, args []string, streams IO) int {
 		progressFunc = newRunProgress(streams.Err, redactor).Report
 	}
 	var httpExecutor model.HTTPExecutor = httpstep.New(nil)
-	var triggers model.TriggerExecutor = triggerexecutor.New(httpExecutor)
+	localTriggers := triggerexecutor.New(httpExecutor)
+	localTriggers.Progress = func(remote k6cloudrun.Progress) {
+		progressFunc(engine.ProgressEvent{Kind: engine.ProgressRemoteTrigger, RemotePhase: remote.Phase, RemoteExecution: remote.Execution, RemoteLogURI: remote.LogURI, CompletedShards: remote.CompletedShards, TotalShards: remote.TotalShards, Elapsed: remote.Elapsed})
+	}
+	var triggers model.TriggerExecutor = localTriggers
 	var closeRemote func() error
 	var closeInstrumentation func() error
 	if target.Runtime == "local" {

@@ -130,6 +130,7 @@ func TestExecuteK6RequiresBinaryInPath(t *testing.T) {
 func TestExecuteK6CloudRunDoesNotRequireLocalBinary(t *testing.T) {
 	runner := &fakeCloudRun{}
 	executor := New(nil)
+	executor.Progress = func(k6cloudrun.Progress) {}
 	executor.cloudRun = runner
 	trace := &model.TestTraceContext{TraceID: "0123456789abcdef0123456789abcdef", SpanID: "0123456789abcdef", TraceState: "lamplight=true"}
 	response, err := executor.Execute(context.Background(), model.TriggerRequest{Kind: model.TriggerK6, Attributes: map[string]any{
@@ -139,7 +140,7 @@ func TestExecuteK6CloudRunDoesNotRequireLocalBinary(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if response.StatusCode != 0 || runner.request.Tasks != 2 || runner.request.TraceParent != trace.TraceParent() || runner.request.Environment["TOKEN"] != "" || runner.request.Environment["BASE_URL"] == "" || len(runner.request.JobEnvironment) != 1 {
+	if response.StatusCode != 0 || runner.request.Tasks != 2 || runner.request.TraceParent != trace.TraceParent() || runner.request.Environment["TOKEN"] != "" || runner.request.Environment["BASE_URL"] == "" || len(runner.request.JobEnvironment) != 1 || runner.request.Progress == nil {
 		t.Fatalf("response=%#v request=%#v", response, runner.request)
 	}
 }

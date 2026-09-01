@@ -1043,6 +1043,10 @@ and trigger starts or completes. In an interactive terminal, in-flight triggers
 and trace polling use an updating spinner. Each trace observation reports its
 attempt number, total spans received, and matching span count per check. With
 redirected stderr the same transitions are emitted as append-only lines. The
+Cloud Run k6 executor also reports elapsed time and completed shards while the
+remote execution is running, then reports each collected shard result. It
+checks result-object availability every five seconds and emits an unchanged
+heartbeat at most once every fifteen seconds. The
 final pretty summary is always written to stdout. `--json-file` and
 `--text-file` write machine-readable results atomically with mode `0600`; both
 may be supplied in the same run but must use different paths.
