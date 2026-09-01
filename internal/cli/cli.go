@@ -417,6 +417,7 @@ func run(ctx context.Context, args []string, streams IO) int {
 	fs.Var(&tags, "tag", "select tag (repeatable)")
 	fs.Var(&files, "file", "select definition file relative to project.base_dir (repeatable)")
 	exclude := fs.Bool("exclude", false, "exclude tests matching the selector")
+	legacyOutput := fs.String("output", "", "deprecated output format")
 	jsonFile := fs.String("json-file", "", "write the final JSON result to a file")
 	textFile := fs.String("text-file", "", "write the final deterministic text result to a file")
 	keep := fs.Bool("keep-artifacts", false, "keep successful artifacts")
@@ -425,6 +426,10 @@ func run(ctx context.Context, args []string, streams IO) int {
 	targetName := fs.String("target", "", "execution target")
 	fs.Var(&vars, "var", "NAME=VALUE")
 	if fs.Parse(normalizeRunArgs(args)) != nil {
+		return 1
+	}
+	if *legacyOutput != "" && (*jsonFile != "" || *textFile != "") {
+		writeLine(streams.Err, "error: --output cannot be combined with --json-file or --text-file")
 		return 1
 	}
 	if *jsonFile != "" && *textFile != "" {
@@ -523,16 +528,24 @@ func run(ctx context.Context, args []string, streams IO) int {
 	}
 	redactor := result.NewRedactor(sensitiveStrings(values)...)
 	var renderer model.Renderer
-	if isCIEnvironment(os.Getenv) {
+	if *legacyOutput != "" {
+		renderer, err = render.New(render.Format(*legacyOutput), redactor)
+		if err != nil {
+			writeLine(streams.Err, "error:", err)
+			return 1
+		}
+	} else if isCIEnvironment(os.Getenv) {
 		renderer = render.NewPrettyRenderer(false, redactor)
 	} else {
 		renderer = render.NewAutoPrettyRenderer(streams.Out, redactor)
 	}
 	var progressFunc engine.ProgressFunc
-	if isCIEnvironment(os.Getenv) {
-		progressFunc = newCIRunProgress(streams.Err, redactor).Report
-	} else {
-		progressFunc = newRunProgress(streams.Err, redactor).Report
+	if *legacyOutput == "" || render.Format(*legacyOutput) == render.FormatPretty {
+		if isCIEnvironment(os.Getenv) {
+			progressFunc = newCIRunProgress(streams.Err, redactor).Report
+		} else {
+			progressFunc = newRunProgress(streams.Err, redactor).Report
+		}
 	}
 	var httpExecutor model.HTTPExecutor = httpstep.New(nil)
 	localTriggers := triggerexecutor.New(httpExecutor)
@@ -690,7 +703,7 @@ func containsExecutableK6(tests []model.TestDefinition) bool {
 func normalizeRunArgs(args []string) []string {
 	flags := make([]string, 0, len(args))
 	positionals := make([]string, 0, 1)
-	valueFlags := map[string]bool{"--tag": true, "--file": true, "--json-file": true, "--text-file": true, "--artifacts-dir": true, "--var": true, "--target": true, "--config": true, "-c": true, "--working-dir": true, "-w": true}
+	valueFlags := map[string]bool{"--tag": true, "--file": true, "--output": true, "--json-file": true, "--text-file": true, "--artifacts-dir": true, "--var": true, "--target": true, "--config": true, "-c": true, "--working-dir": true, "-w": true}
 	for index := 0; index < len(args); index++ {
 		argument := args[index]
 		if strings.HasPrefix(argument, "-") {

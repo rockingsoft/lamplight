@@ -131,6 +131,18 @@ func TestRunAlwaysPrintsPrettyAndExportsRequestedFormats(t *testing.T) {
 	if code := Main(context.Background(), []string{"run", "-w", dir, "--json-file", jsonFile, "--text-file", filepath.Join(dir, ".", "result.json")}, IO{Out: &stdout, Err: &stderr}); code != 1 || stdout.Len() != 0 || !strings.Contains(stderr.String(), "must use different paths") {
 		t.Fatalf("collision code=%d stdout=%q stderr=%q", code, stdout.String(), stderr.String())
 	}
+
+	stdout.Reset()
+	stderr.Reset()
+	if code := Main(context.Background(), []string{"run", "-w", dir, "--output", "json"}, IO{Out: &stdout, Err: &stderr}); code != 0 || !json.Valid(stdout.Bytes()) || stderr.Len() != 0 {
+		t.Fatalf("legacy output code=%d stdout=%q stderr=%q", code, stdout.String(), stderr.String())
+	}
+
+	stdout.Reset()
+	stderr.Reset()
+	if code := Main(context.Background(), []string{"run", "-w", dir, "--output", "json", "--json-file", jsonFile}, IO{Out: &stdout, Err: &stderr}); code != 1 || stdout.Len() != 0 || !strings.Contains(stderr.String(), "cannot be combined") {
+		t.Fatalf("legacy output collision code=%d stdout=%q stderr=%q", code, stdout.String(), stderr.String())
+	}
 }
 
 func TestRunIncludesOrExcludesRepeatedSelectors(t *testing.T) {
