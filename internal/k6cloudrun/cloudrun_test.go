@@ -53,7 +53,7 @@ func TestClientRunsDistributedJobAndCleansRunObjects(t *testing.T) {
 		case request.Method == http.MethodGet && strings.HasSuffix(request.URL.Path, "/operations/one"):
 			writeJSON(t, writer, map[string]any{"name": "projects/p/locations/r/operations/one", "done": true, "response": map[string]any{"name": "projects/p/locations/r/jobs/loadtest/executions/run-1", "logUri": "https://console.example/logs"}})
 		case request.Method == http.MethodGet && strings.HasSuffix(request.URL.Path, "/executions/run-1"):
-			writeJSON(t, writer, map[string]any{"name": "projects/p/locations/r/jobs/loadtest/executions/run-1", "logUri": "https://console.example/logs"})
+			writeJSON(t, writer, map[string]any{"name": "projects/p/locations/r/jobs/loadtest/executions/run-1", "logUri": "https://console.example/logs", "completionTime": "2026-09-02T12:01:39Z"})
 		case request.Method == http.MethodGet && strings.Contains(request.URL.Path, "/results/"):
 			index := 0
 			if strings.Contains(request.URL.Path, "%2F1.json") || strings.HasSuffix(request.URL.Path, "/1.json") {
@@ -131,7 +131,7 @@ func TestClientCollectsShardEvidenceWhenCloudRunOperationFails(t *testing.T) {
 				"metadata": map[string]any{"name": "projects/p/locations/r/jobs/loadtest/executions/run-failed"},
 			})
 		case request.Method == http.MethodGet && strings.HasSuffix(request.URL.Path, "/executions/run-failed"):
-			writeJSON(t, writer, map[string]any{"name": "projects/p/locations/r/jobs/loadtest/executions/run-failed", "failedCount": 1})
+			writeJSON(t, writer, map[string]any{"name": "projects/p/locations/r/jobs/loadtest/executions/run-failed", "completionTime": "2026-09-02T12:01:39Z", "failedCount": 1})
 		case request.Method == http.MethodGet && strings.Contains(request.URL.Path, "/results/"):
 			writeJSON(t, writer, ShardResult{Index: 0, ExitCode: 99, Stderr: "threshold crossed", Summary: map[string]any{"failed": true}})
 		case request.Method == http.MethodDelete && strings.HasPrefix(request.URL.Path, "/storage/v1/"):
@@ -149,6 +149,71 @@ func TestClientCollectsShardEvidenceWhenCloudRunOperationFails(t *testing.T) {
 	}
 	if len(result.Shards) != 1 || result.Shards[0].Summary == nil || result.Execution == "" {
 		t.Fatalf("result=%#v", result)
+	}
+}
+
+func TestClientWaitsForExecutionCompletionBeforeCollectingAndCleaningObjects(t *testing.T) {
+	directory := t.TempDir()
+	script := filepath.Join(directory, "load.js")
+	if err := os.WriteFile(script, []byte("export default function() {}\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	var mutex sync.Mutex
+	executionPolls := 0
+	resultReadsBeforeCompletion := 0
+	configDeletedBeforeCompletion := false
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		switch {
+		case request.Method == http.MethodPost && strings.HasPrefix(request.URL.Path, "/upload/storage/v1/"):
+			writer.WriteHeader(http.StatusOK)
+		case request.Method == http.MethodGet && strings.HasSuffix(request.URL.Path, "/jobs/loadtest"):
+			writeJSON(t, writer, map[string]any{"template": map[string]any{"parallelism": 1, "template": map[string]any{"maxRetries": 0}}})
+		case request.Method == http.MethodPost && strings.HasSuffix(request.URL.Path, "/jobs/loadtest:run"):
+			writeJSON(t, writer, map[string]any{"name": "projects/p/locations/r/operations/created"})
+		case request.Method == http.MethodGet && strings.HasSuffix(request.URL.Path, "/operations/created"):
+			writeJSON(t, writer, map[string]any{"name": "projects/p/locations/r/operations/created", "done": true, "response": map[string]any{"name": "projects/p/locations/r/jobs/loadtest/executions/run-racing"}})
+		case request.Method == http.MethodGet && strings.HasSuffix(request.URL.Path, "/executions/run-racing"):
+			mutex.Lock()
+			executionPolls++
+			polls := executionPolls
+			mutex.Unlock()
+			response := map[string]any{"name": "projects/p/locations/r/jobs/loadtest/executions/run-racing"}
+			if polls >= 3 {
+				response["completionTime"] = "2026-09-02T12:01:39Z"
+			}
+			writeJSON(t, writer, response)
+		case request.Method == http.MethodHead && strings.Contains(request.URL.Path, "/results/"):
+			writer.WriteHeader(http.StatusNotFound)
+		case request.Method == http.MethodGet && strings.Contains(request.URL.Path, "/results/"):
+			mutex.Lock()
+			if executionPolls < 3 {
+				resultReadsBeforeCompletion++
+			}
+			mutex.Unlock()
+			writeJSON(t, writer, ShardResult{Index: 0, ExitCode: 0})
+		case request.Method == http.MethodDelete && strings.HasPrefix(request.URL.Path, "/storage/v1/"):
+			mutex.Lock()
+			if strings.Contains(request.URL.Path, "config.json") && executionPolls < 3 {
+				configDeletedBeforeCompletion = true
+			}
+			mutex.Unlock()
+			writer.WriteHeader(http.StatusNoContent)
+		default:
+			http.Error(writer, request.Method+" "+request.URL.String(), http.StatusNotFound)
+		}
+	}))
+	defer server.Close()
+
+	client := newWithHTTPClient(server.Client())
+	client.runBase, client.storageBase, client.poll = server.URL, server.URL, time.Millisecond
+	result, err := client.Run(context.Background(), Request{Project: "p", Region: "r", Job: "loadtest", Bucket: "bucket", Tasks: 1, Timeout: time.Minute, Script: script, BundleRoot: directory, OutputLimit: 1 << 20})
+	if err != nil {
+		t.Fatal(err)
+	}
+	mutex.Lock()
+	defer mutex.Unlock()
+	if executionPolls != 3 || resultReadsBeforeCompletion != 0 || configDeletedBeforeCompletion {
+		t.Fatalf("executionPolls=%d resultReadsBeforeCompletion=%d configDeletedBeforeCompletion=%t result=%#v", executionPolls, resultReadsBeforeCompletion, configDeletedBeforeCompletion, result)
 	}
 }
 

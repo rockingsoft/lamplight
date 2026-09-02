@@ -99,6 +99,7 @@ type apiError struct {
 type execution struct {
 	Name           string `json:"name"`
 	LogURI         string `json:"logUri"`
+	CompletionTime string `json:"completionTime"`
 	FailedCount    int    `json:"failedCount"`
 	CancelledCount int    `json:"cancelledCount"`
 }
@@ -223,8 +224,9 @@ func (c *Client) Run(ctx context.Context, request Request) (result Result, runEr
 	if completed.Name == "" {
 		return result, errors.New("operation completed without a Cloud Run execution name")
 	}
-	if err := c.jsonRequest(ctx, http.MethodGet, c.runBase+"/v2/"+completed.Name, nil, &completed); err != nil {
-		return result, fmt.Errorf("read completed Cloud Run execution: %w", err)
+	completed, err = c.waitExecution(ctx, completed, request.Bucket, resultObjects, startedAt, request.Progress)
+	if err != nil {
+		return result, fmt.Errorf("wait for Cloud Run execution: %w", err)
 	}
 	result.Execution, result.LogURI = completed.Name, completed.LogURI
 	totalResultBytes := int64(0)
@@ -439,6 +441,32 @@ func (c *Client) waitOperation(ctx context.Context, current operation, bucket st
 	}
 	if current.Error != nil {
 		return current, fmt.Errorf("google API error %d: %s", current.Error.Code, current.Error.Message)
+	}
+	return current, nil
+}
+
+func (c *Client) waitExecution(ctx context.Context, current execution, bucket string, resultObjects []string, startedAt time.Time, progress func(Progress)) (execution, error) {
+	lastReportedAt := startedAt
+	lastCheckedAt := time.Time{}
+	lastCompleted := -1
+	for current.CompletionTime == "" {
+		select {
+		case <-ctx.Done():
+			return current, ctx.Err()
+		case <-time.After(c.poll):
+		}
+		if err := c.jsonRequest(ctx, http.MethodGet, c.runBase+"/v2/"+current.Name, nil, &current); err != nil {
+			return current, err
+		}
+		now := c.now()
+		if current.CompletionTime != "" || lastCheckedAt.IsZero() || now.Sub(lastCheckedAt) >= 5*time.Second {
+			completed := c.completedResults(ctx, bucket, resultObjects)
+			lastCheckedAt = now
+			if completed != lastCompleted || now.Sub(lastReportedAt) >= 15*time.Second {
+				reportProgress(progress, Progress{Phase: "running", Execution: current.Name, LogURI: current.LogURI, CompletedShards: completed, TotalShards: len(resultObjects), Elapsed: now.Sub(startedAt)})
+				lastCompleted, lastReportedAt = completed, now
+			}
+		}
 	}
 	return current, nil
 }
