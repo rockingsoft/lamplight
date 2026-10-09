@@ -31,6 +31,7 @@ type Engine struct {
 	TraceFactory model.TraceContextFactory
 	Clock        model.Clock
 	FailFast     bool
+	Workers      int
 	Progress     ProgressFunc
 	progressMu   sync.Mutex
 }
@@ -40,6 +41,7 @@ func (e *Engine) Run(ctx context.Context, project *model.Project) model.RunResul
 	run := model.RunResult{SchemaVersion: 1, RunID: randomID(), StartedAt: started, Tests: []model.TestResult{}}
 	debuglog.Debug(ctx, "engine run started", "run_id", run.RunID)
 	e.progress(ProgressEvent{Kind: ProgressRunStarted, RunID: run.RunID, TestsTotal: len(projectTests(project))})
+	defer e.progress(ProgressEvent{Kind: ProgressRunCompleted, RunID: run.RunID})
 	if project == nil || project.Definition == nil || e.HTTP == nil {
 		run.Status = model.StatusError
 		run.Summary.Errors = 1
@@ -60,6 +62,11 @@ func (e *Engine) Run(ctx context.Context, project *model.Project) model.RunResul
 	}
 	if needsMetrics(project.Tests) && project.Metrics == nil {
 		return technicalRun(run, "metrics_required", "selected tests contain metric checks but no Prometheus source or OTLP receiver is configured")
+	}
+	if e.Workers > 1 && !e.FailFast {
+		run.Tests = e.runConcurrent(ctx, project, run.RunID)
+		run.DurationMS = time.Since(started).Milliseconds()
+		return result.AggregateRun(run)
 	}
 	for index, test := range project.Tests {
 		if ctx.Err() != nil {
@@ -82,6 +89,46 @@ func (e *Engine) Run(ctx context.Context, project *model.Project) model.RunResul
 	return run
 }
 
+func (e *Engine) runConcurrent(ctx context.Context, project *model.Project, runID string) []model.TestResult {
+	tests := project.Tests
+	results := make([]model.TestResult, len(tests))
+	workers := min(e.Workers, len(tests))
+	jobs := make(chan int)
+	var group sync.WaitGroup
+	for range workers {
+		group.Add(1)
+		go func() {
+			defer group.Done()
+			for index := range jobs {
+				test := tests[index]
+				e.progress(ProgressEvent{Kind: ProgressTestStarted, RunID: runID, TestName: test.Name})
+				tr, _ := e.runTest(ctx, project, test)
+				results[index] = tr
+				e.progress(ProgressEvent{Kind: ProgressTestCompleted, RunID: runID, TestName: test.Name, Status: tr.Status, DurationMS: tr.DurationMS})
+			}
+		}()
+	}
+	dispatched := 0
+dispatch:
+	for index := range tests {
+		select {
+		case <-ctx.Done():
+			break dispatch
+		case jobs <- index:
+			dispatched++
+		}
+	}
+	close(jobs)
+	group.Wait()
+	for index := dispatched; index < len(tests); index++ {
+		results[index] = skippedTests(tests[index : index+1])[0]
+	}
+	if dispatched < len(tests) {
+		results[dispatched].Status = model.StatusCancelled
+	}
+	return results
+}
+
 func projectTests(project *model.Project) []model.TestDefinition {
 	if project == nil {
 		return nil
@@ -102,7 +149,7 @@ func (e *Engine) runTest(ctx context.Context, project *model.Project, test model
 	tr := model.TestResult{Name: test.Name, Tags: test.Tags, File: test.File, Status: model.StatusPassed, Steps: []model.StepResult{}}
 	stepOutputs := map[string]map[string]cty.Value{}
 	for index, step := range test.Steps {
-		sr, technical := e.runStep(ctx, project, step, stepOutputs)
+		sr, technical := e.runStep(ctx, project, test.Name, step, stepOutputs)
 		tr.Steps = append(tr.Steps, sr)
 		if sr.Status != model.StatusPassed {
 			tr.Status = sr.Status
@@ -115,16 +162,16 @@ func (e *Engine) runTest(ctx context.Context, project *model.Project, test model
 	return tr, false
 }
 
-func (e *Engine) runStep(ctx context.Context, project *model.Project, step model.StepDefinition, previous map[string]map[string]cty.Value) (model.StepResult, bool) {
+func (e *Engine) runStep(ctx context.Context, project *model.Project, testName string, step model.StepDefinition, previous map[string]map[string]cty.Value) (model.StepResult, bool) {
 	started := time.Now()
 	sr := model.StepResult{Name: step.Name, ExecutionID: randomID(), Status: model.StatusPassed, Checks: []model.CheckResult{}}
 	debuglog.Debug(ctx, "step started", "name", step.Name, "execution_id", sr.ExecutionID, "trigger", step.Trigger.Kind)
-	e.progress(ProgressEvent{Kind: ProgressStepStarted, StepName: step.Name, Trigger: step.Trigger.Kind})
+	e.progress(ProgressEvent{Kind: ProgressStepStarted, TestName: testName, StepName: step.Name, Trigger: step.Trigger.Kind})
 	finish := func(status model.Status) (model.StepResult, bool) {
 		sr.Status = status
 		sr.DurationMS = time.Since(started).Milliseconds()
 		debuglog.Debug(ctx, "step completed", "name", step.Name, "status", status, "duration_ms", sr.DurationMS, "checks", len(sr.Checks))
-		e.progress(ProgressEvent{Kind: ProgressStepCompleted, StepName: step.Name, Trigger: step.Trigger.Kind, Status: status, DurationMS: sr.DurationMS})
+		e.progress(ProgressEvent{Kind: ProgressStepCompleted, TestName: testName, StepName: step.Name, Trigger: step.Trigger.Kind, Status: status, DurationMS: sr.DurationMS})
 		return sr, status == model.StatusError || status == model.StatusCancelled
 	}
 	if ctx.Err() != nil {

@@ -494,7 +494,7 @@ Rules:
 
 - The label must be a valid HCL identifier and unique in its test.
 - A step contains exactly one `http_request` block.
-- Steps execute in source order; there is no topological sort or parallelism.
+- Steps execute in source order within each test. Independent tests can run concurrently.
 - A step may reference outputs only from earlier steps in the same test.
 - Checks always apply to the response and trace produced by their containing
   step.
@@ -1028,6 +1028,7 @@ Options:
 | `--json-file FILE` | Write the final versioned JSON result to `FILE`. |
 | `--text-file FILE` | Write the final deterministic ANSI-free text result to `FILE`. |
 | `--fail-fast` | Stop after the first failed or errored test and mark the remaining tests as skipped. |
+| `--workers N` | Run up to N independent tests concurrently (default 4; use 1 for serial execution). `--fail-fast` runs serially. Remote targets run serially. |
 | `--keep-artifacts` | Preserve artifacts after a successful run. |
 | `--artifacts-dir DIR` | Select the parent directory for run artifacts. |
 
@@ -1232,7 +1233,7 @@ The current language does not support:
 - suites, reusable tests, actions, flows, or components;
 - global or reusable checks;
 - cross-test output references;
-- parallel tests or steps;
+- parallel steps within a test;
 - configurable HTTP operation retries;
 - span relationships, events, links, or aggregate queries;
 - TraceQL predicates in the DSL;

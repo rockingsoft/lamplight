@@ -32,7 +32,7 @@ func TestReceiver(t *testing.T) {
 	}
 	tid, _ := hex.DecodeString("0123456789abcdef0123456789abcdef")
 	sid, _ := hex.DecodeString("0123456789abcdef")
-	payload := &collector.ExportTraceServiceRequest{ResourceSpans: []*tracepb.ResourceSpans{{Resource: &resource.Resource{Attributes: []*common.KeyValue{{Key: "service.name", Value: &common.AnyValue{Value: &common.AnyValue_StringValue{StringValue: "shop"}}}}}, ScopeSpans: []*tracepb.ScopeSpans{{Spans: []*tracepb.Span{{TraceId: tid, SpanId: sid, Name: "checkout", StartTimeUnixNano: 1, EndTimeUnixNano: 10}}}}}}}
+	payload := &collector.ExportTraceServiceRequest{ResourceSpans: []*tracepb.ResourceSpans{{Resource: &resource.Resource{Attributes: []*common.KeyValue{{Key: "service.name", Value: &common.AnyValue{Value: &common.AnyValue_StringValue{StringValue: "shop"}}}}}, ScopeSpans: []*tracepb.ScopeSpans{{Spans: []*tracepb.Span{{TraceId: tid, SpanId: sid, Name: "checkout", Kind: tracepb.Span_SPAN_KIND_SERVER, Status: &tracepb.Status{Code: tracepb.Status_STATUS_CODE_ERROR}, StartTimeUnixNano: 1, EndTimeUnixNano: 10}}}}}}}
 	b, _ := proto.Marshal(payload)
 	r, err := http.Post("http://"+addr+"/v1/traces", "application/x-protobuf", bytes.NewReader(b))
 	if err != nil {
@@ -40,7 +40,7 @@ func TestReceiver(t *testing.T) {
 	}
 	_ = r.Body.Close()
 	got, err := s.Observe(context.Background(), model.TraceID(hex.EncodeToString(tid)))
-	if err != nil || len(got.Spans) != 1 || got.Spans[0].Resource["service.name"] != "shop" {
+	if err != nil || len(got.Spans) != 1 || got.Spans[0].Resource["service.name"] != "shop" || got.Spans[0].Kind != "server" || got.Spans[0].Status != "error" {
 		t.Fatalf("%#v %v", got, err)
 	}
 }
@@ -59,7 +59,23 @@ func TestReceiverIngestsCumulativeAndDeltaMetrics(t *testing.T) {
 	}
 	post := func(value int64, temporality metricpb.AggregationTemporality) {
 		t.Helper()
-		payload := &metriccollector.ExportMetricsServiceRequest{ResourceMetrics: []*metricpb.ResourceMetrics{{Resource: &resource.Resource{Attributes: []*common.KeyValue{{Key: "service.name", Value: &common.AnyValue{Value: &common.AnyValue_StringValue{StringValue: "shop"}}}}}, ScopeMetrics: []*metricpb.ScopeMetrics{{Metrics: []*metricpb.Metric{{Name: "orders.created", Data: &metricpb.Metric_Sum{Sum: &metricpb.Sum{IsMonotonic: true, AggregationTemporality: temporality, DataPoints: []*metricpb.NumberDataPoint{{Attributes: []*common.KeyValue{{Key: "result", Value: &common.AnyValue{Value: &common.AnyValue_StringValue{StringValue: "ok"}}}}, Value: &metricpb.NumberDataPoint_AsInt{AsInt: value}}}}}}}}}}}}
+		payload := &metriccollector.ExportMetricsServiceRequest{ResourceMetrics: []*metricpb.ResourceMetrics{{
+			Resource: &resource.Resource{Attributes: []*common.KeyValue{
+				{Key: "service.name", Value: &common.AnyValue{Value: &common.AnyValue_StringValue{StringValue: "shop"}}},
+				{Key: "environment", Value: &common.AnyValue{Value: &common.AnyValue_StringValue{StringValue: "test"}}},
+			}},
+			ScopeMetrics: []*metricpb.ScopeMetrics{{Metrics: []*metricpb.Metric{{
+				Name: "orders.created",
+				Data: &metricpb.Metric_Sum{Sum: &metricpb.Sum{
+					IsMonotonic:            true,
+					AggregationTemporality: temporality,
+					DataPoints: []*metricpb.NumberDataPoint{{
+						Attributes: []*common.KeyValue{{Key: "result", Value: &common.AnyValue{Value: &common.AnyValue_StringValue{StringValue: "ok"}}}},
+						Value:      &metricpb.NumberDataPoint_AsInt{AsInt: value},
+					}},
+				}},
+			}}}},
+		}}}
 		encoded, _ := proto.Marshal(payload)
 		response, postErr := http.Post("http://"+addr+"/v1/metrics", "application/x-protobuf", bytes.NewReader(encoded))
 		if postErr != nil {
@@ -72,6 +88,10 @@ func TestReceiverIngestsCumulativeAndDeltaMetrics(t *testing.T) {
 	snapshot, err := store.Snapshot(context.Background(), `orders_created_total{result="ok",resource_service_name="shop"}`)
 	if err != nil || len(snapshot.Samples) != 1 || snapshot.Samples[0].Value != 5 || snapshot.Samples[0].Labels["resource_service_name"] != "shop" {
 		t.Fatalf("snapshot=%#v err=%v", snapshot, err)
+	}
+	alias, err := store.Snapshot(context.Background(), `orders_created{result="ok",environment="test"}`)
+	if err != nil || len(alias.Samples) != 1 || alias.Samples[0].Value != 5 {
+		t.Fatalf("alias=%#v err=%v", alias, err)
 	}
 }
 

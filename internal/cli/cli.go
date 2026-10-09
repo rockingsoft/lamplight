@@ -422,10 +422,21 @@ func run(ctx context.Context, args []string, streams IO) int {
 	textFile := fs.String("text-file", "", "write the final deterministic text result to a file")
 	keep := fs.Bool("keep-artifacts", false, "keep successful artifacts")
 	failFast := fs.Bool("fail-fast", false, "stop after the first failed or errored test")
+	workers := fs.Int("workers", 4, "maximum concurrent tests (default 4; 1 runs serially)")
 	artifactsDir := fs.String("artifacts-dir", "", "artifact parent directory")
 	targetName := fs.String("target", "", "execution target")
 	fs.Var(&vars, "var", "NAME=VALUE")
 	if fs.Parse(normalizeRunArgs(args)) != nil {
+		return 1
+	}
+	workersExplicit := false
+	fs.Visit(func(flag *flag.Flag) {
+		if flag.Name == "workers" {
+			workersExplicit = true
+		}
+	})
+	if *workers < 1 {
+		writeLine(streams.Err, "error: --workers must be at least 1")
 		return 1
 	}
 	if *legacyOutput != "" && (*jsonFile != "" || *textFile != "") {
@@ -466,6 +477,13 @@ func run(ctx context.Context, args []string, streams IO) int {
 	if target.Runtime != "local" && containsExecutableK6(tests) {
 		writeLine(streams.Err, "error: k6 script triggers currently require the local target")
 		return 1
+	}
+	if target.Runtime != "local" && *workers > 1 {
+		if workersExplicit {
+			writeLine(streams.Err, "error: concurrent tests require the local target")
+			return 1
+		}
+		*workers = 1
 	}
 	debuglog.Debug(ctx, "selected tests", "count", len(tests), "name", name, "tags", strings.Join(tags, ","), "files", strings.Join(files, ","), "exclude", *exclude)
 	expressions := collectExpressions(def, tests)
@@ -541,16 +559,14 @@ func run(ctx context.Context, args []string, streams IO) int {
 	}
 	var progressFunc engine.ProgressFunc
 	if *legacyOutput == "" || render.Format(*legacyOutput) == render.FormatPretty {
-		if isCIEnvironment(os.Getenv) {
-			progressFunc = newCIRunProgress(streams.Err, redactor).Report
-		} else {
-			progressFunc = newRunProgress(streams.Err, redactor).Report
-		}
+		progressFunc = newParallelRunProgress(streams.Err, redactor).Report
 	}
 	var httpExecutor model.HTTPExecutor = httpstep.New(nil)
 	localTriggers := triggerexecutor.New(httpExecutor)
 	localTriggers.Progress = func(remote k6cloudrun.Progress) {
-		progressFunc(engine.ProgressEvent{Kind: engine.ProgressRemoteTrigger, RemotePhase: remote.Phase, RemoteExecution: remote.Execution, RemoteLogURI: remote.LogURI, CompletedShards: remote.CompletedShards, TotalShards: remote.TotalShards, Elapsed: remote.Elapsed})
+		if progressFunc != nil {
+			progressFunc(engine.ProgressEvent{Kind: engine.ProgressRemoteTrigger, RemotePhase: remote.Phase, RemoteExecution: remote.Execution, RemoteLogURI: remote.LogURI, CompletedShards: remote.CompletedShards, TotalShards: remote.TotalShards, Elapsed: remote.Elapsed})
+		}
 	}
 	var triggers model.TriggerExecutor = localTriggers
 	var closeRemote func() error
@@ -598,7 +614,7 @@ func run(ctx context.Context, args []string, streams IO) int {
 			runtimeProject.Metrics = client
 		}
 	}
-	eng := engine.Engine{HTTP: httpExecutor, Triggers: triggers, TraceFactory: tracecontext.NewFactory(), FailFast: *failFast, Progress: progressFunc}
+	eng := engine.Engine{HTTP: httpExecutor, Triggers: triggers, TraceFactory: tracecontext.NewFactory(), FailFast: *failFast, Workers: *workers, Progress: progressFunc}
 	runResult := eng.Run(ctx, runtimeProject)
 	if closeInstrumentation != nil {
 		if err := closeInstrumentation(); err != nil {
@@ -703,7 +719,7 @@ func containsExecutableK6(tests []model.TestDefinition) bool {
 func normalizeRunArgs(args []string) []string {
 	flags := make([]string, 0, len(args))
 	positionals := make([]string, 0, 1)
-	valueFlags := map[string]bool{"--tag": true, "--file": true, "--output": true, "--json-file": true, "--text-file": true, "--artifacts-dir": true, "--var": true, "--target": true, "--config": true, "-c": true, "--working-dir": true, "-w": true}
+	valueFlags := map[string]bool{"--tag": true, "--file": true, "--output": true, "--json-file": true, "--text-file": true, "--artifacts-dir": true, "--var": true, "--target": true, "--workers": true, "--config": true, "-c": true, "--working-dir": true, "-w": true}
 	for index := 0; index < len(args); index++ {
 		argument := args[index]
 		if strings.HasPrefix(argument, "-") {
@@ -1038,6 +1054,7 @@ Options:
       --json-file FILE    Write the final JSON result to FILE
       --text-file FILE    Write the final deterministic text result to FILE
       --fail-fast         Stop after the first failed or errored test
+      --workers N         Maximum concurrent tests (default 4; 1 runs serially)
       --keep-artifacts    Keep artifacts for successful runs
       --artifacts-dir DIR Artifact parent directory
   -h, --help              Show this help

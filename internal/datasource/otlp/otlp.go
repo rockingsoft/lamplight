@@ -229,7 +229,12 @@ func (s *Store) ingestMetric(metrics map[string]model.MetricSample, metric *metr
 		}
 		add := sum.AggregationTemporality == metricpb.AggregationTemporality_AGGREGATION_TEMPORALITY_DELTA
 		for _, point := range sum.DataPoints {
-			putMetric(metrics, numberSample(metric, metricType, translationType, numberValue(point), point.Attributes, resource), add)
+			sample := numberSample(metric, metricType, translationType, numberValue(point), point.Attributes, resource)
+			putMetric(metrics, sample, add)
+			if sum.IsMonotonic && strings.HasSuffix(sample.Name, "_total") {
+				sample.Name = strings.TrimSuffix(sample.Name, "_total")
+				putMetric(metrics, sample, add)
+			}
 		}
 		return
 	}
@@ -297,6 +302,11 @@ func sample(name, metricType string, value float64, attributes []*common.KeyValu
 	labels := make(map[string]string, len(values))
 	for key, attribute := range normalized {
 		labels[key] = fmt.Sprint(attribute)
+	}
+	if environment, ok := resource["environment"]; ok {
+		if _, present := labels["environment"]; !present {
+			labels["environment"] = fmt.Sprint(environment)
+		}
 	}
 	return model.MetricSample{Name: name, Type: metricType, Value: value, Labels: labels, Attributes: values, Resource: clone(resource)}
 }
@@ -366,7 +376,7 @@ func (s *Store) ingest(groups []*tracepb.ResourceSpans) {
 				if tid == "" {
 					continue
 				}
-				item := model.Span{TraceID: tid, SpanID: hex.EncodeToString(sp.SpanId), ParentSpanID: hex.EncodeToString(sp.ParentSpanId), Name: sp.Name, Kind: sp.Kind.String(), Status: sp.GetStatus().GetCode().String(), StatusMessage: sp.GetStatus().GetMessage(), Duration: time.Duration(int64(sp.EndTimeUnixNano - sp.StartTimeUnixNano)), Attributes: attrs(sp.Attributes), Resource: clone(resource)}
+				item := model.Span{TraceID: tid, SpanID: hex.EncodeToString(sp.SpanId), ParentSpanID: hex.EncodeToString(sp.ParentSpanId), Name: sp.Name, Kind: strings.TrimPrefix(strings.ToLower(sp.Kind.String()), "span_kind_"), Status: strings.TrimPrefix(strings.ToLower(sp.GetStatus().GetCode().String()), "status_code_"), StatusMessage: sp.GetStatus().GetMessage(), Duration: time.Duration(int64(sp.EndTimeUnixNano - sp.StartTimeUnixNano)), Attributes: attrs(sp.Attributes), Resource: clone(resource)}
 				s.traces[tid] = upsert(s.traces[tid], item)
 			}
 		}
