@@ -126,6 +126,7 @@ lamplight run --tag smoke
 lamplight run --tag slow --tag flaky --exclude
 lamplight run --file checkout/orders.wick --exclude
 lamplight run --fail-fast
+lamplight run --workers 1  # serial execution; default is 4 concurrent tests
 ```
 
 To run trace assertions without instrumenting or reconfiguring the application,

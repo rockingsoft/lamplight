@@ -52,3 +52,22 @@ func TestCIRunProgressUsesStablePlaywrightStyleLines(t *testing.T) {
 		t.Fatalf("CI progress must be ANSI-free and omit polling attempts: %q", text)
 	}
 }
+
+func TestParallelProgressReportsOnlyCompletedTests(t *testing.T) {
+	var output bytes.Buffer
+	progress := newParallelRunProgress(&output, result.NewRedactor())
+	progress.Report(engine.ProgressEvent{Kind: engine.ProgressRunStarted, TestsTotal: 2})
+	progress.Report(engine.ProgressEvent{Kind: engine.ProgressTestStarted, TestName: "alpha"})
+	progress.Report(engine.ProgressEvent{Kind: engine.ProgressStepStarted, StepName: "shared step"})
+	progress.Report(engine.ProgressEvent{Kind: engine.ProgressTestCompleted, TestName: "beta", Status: model.StatusPassed, DurationMS: 100})
+	progress.Report(engine.ProgressEvent{Kind: engine.ProgressTestCompleted, TestName: "alpha", Status: model.StatusFailed, DurationMS: 200})
+	got := output.String()
+	for _, want := range []string{"Running 2 tests concurrently", "1/2 beta", "2/2 alpha"} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("missing %q in %q", want, got)
+		}
+	}
+	if strings.Contains(got, "shared step") {
+		t.Fatalf("interleaved step was attributed to a test: %q", got)
+	}
+}

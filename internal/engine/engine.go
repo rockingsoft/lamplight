@@ -31,6 +31,7 @@ type Engine struct {
 	TraceFactory model.TraceContextFactory
 	Clock        model.Clock
 	FailFast     bool
+	Workers      int
 	Progress     ProgressFunc
 	progressMu   sync.Mutex
 }
@@ -61,6 +62,11 @@ func (e *Engine) Run(ctx context.Context, project *model.Project) model.RunResul
 	if needsMetrics(project.Tests) && project.Metrics == nil {
 		return technicalRun(run, "metrics_required", "selected tests contain metric checks but no Prometheus source or OTLP receiver is configured")
 	}
+	if e.Workers > 1 && !e.FailFast {
+		run.Tests = e.runConcurrent(ctx, project, run.RunID)
+		run.DurationMS = time.Since(started).Milliseconds()
+		return result.AggregateRun(run)
+	}
 	for index, test := range project.Tests {
 		if ctx.Err() != nil {
 			run.Tests = append(run.Tests, cancelledTests(project.Tests[index:])...)
@@ -80,6 +86,46 @@ func (e *Engine) Run(ctx context.Context, project *model.Project) model.RunResul
 	run.DurationMS = time.Since(started).Milliseconds()
 	run = result.AggregateRun(run)
 	return run
+}
+
+func (e *Engine) runConcurrent(ctx context.Context, project *model.Project, runID string) []model.TestResult {
+	tests := project.Tests
+	results := make([]model.TestResult, len(tests))
+	workers := min(e.Workers, len(tests))
+	jobs := make(chan int)
+	var group sync.WaitGroup
+	for range workers {
+		group.Add(1)
+		go func() {
+			defer group.Done()
+			for index := range jobs {
+				test := tests[index]
+				e.progress(ProgressEvent{Kind: ProgressTestStarted, RunID: runID, TestName: test.Name})
+				tr, _ := e.runTest(ctx, project, test)
+				results[index] = tr
+				e.progress(ProgressEvent{Kind: ProgressTestCompleted, RunID: runID, TestName: test.Name, Status: tr.Status, DurationMS: tr.DurationMS})
+			}
+		}()
+	}
+	dispatched := 0
+dispatch:
+	for index := range tests {
+		select {
+		case <-ctx.Done():
+			break dispatch
+		case jobs <- index:
+			dispatched++
+		}
+	}
+	close(jobs)
+	group.Wait()
+	for index := dispatched; index < len(tests); index++ {
+		results[index] = skippedTests(tests[index : index+1])[0]
+	}
+	if dispatched < len(tests) {
+		results[dispatched].Status = model.StatusCancelled
+	}
+	return results
 }
 
 func projectTests(project *model.Project) []model.TestDefinition {
