@@ -46,6 +46,7 @@ type ProgressEventKind string
 
 const (
 	ProgressRunStarted          ProgressEventKind = "run_started"
+	ProgressRunCompleted        ProgressEventKind = "run_completed"
 	ProgressDatasourceStarted   ProgressEventKind = "datasource_started"
 	ProgressDatasourceCompleted ProgressEventKind = "datasource_completed"
 	ProgressTestStarted         ProgressEventKind = "test_started"

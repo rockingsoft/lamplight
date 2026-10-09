@@ -108,8 +108,8 @@ func TestRunAlwaysPrintsPrettyAndExportsRequestedFormats(t *testing.T) {
 	if !strings.Contains(stdout.String(), "PASSED") || json.Valid(stdout.Bytes()) {
 		t.Fatalf("stdout is not pretty output: %q", stdout.String())
 	}
-	if !strings.Contains(stderr.String(), "Running 1 test") {
-		t.Fatalf("stderr is missing progress: %q", stderr.String())
+	if stderr.Len() != 0 {
+		t.Fatalf("non-TTY run emitted partial progress: %q", stderr.String())
 	}
 	jsonResult, err := os.ReadFile(jsonFile)
 	if err != nil || !json.Valid(jsonResult) || !strings.Contains(string(jsonResult), `"status": "passed"`) {

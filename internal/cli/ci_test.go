@@ -53,21 +53,36 @@ func TestCIRunProgressUsesStablePlaywrightStyleLines(t *testing.T) {
 	}
 }
 
-func TestParallelProgressReportsOnlyCompletedTests(t *testing.T) {
+func TestRunProgressOmitsPartialUpdatesWithoutTTY(t *testing.T) {
 	var output bytes.Buffer
 	progress := newParallelRunProgress(&output, result.NewRedactor())
 	progress.Report(engine.ProgressEvent{Kind: engine.ProgressRunStarted, TestsTotal: 2})
 	progress.Report(engine.ProgressEvent{Kind: engine.ProgressTestStarted, TestName: "alpha"})
-	progress.Report(engine.ProgressEvent{Kind: engine.ProgressStepStarted, StepName: "shared step"})
+	progress.Report(engine.ProgressEvent{Kind: engine.ProgressStepStarted, TestName: "alpha", StepName: "shared step"})
+	progress.Report(engine.ProgressEvent{Kind: engine.ProgressStepCompleted, TestName: "alpha", StepName: "shared step", Status: model.StatusPassed, DurationMS: 50})
 	progress.Report(engine.ProgressEvent{Kind: engine.ProgressTestCompleted, TestName: "beta", Status: model.StatusPassed, DurationMS: 100})
 	progress.Report(engine.ProgressEvent{Kind: engine.ProgressTestCompleted, TestName: "alpha", Status: model.StatusFailed, DurationMS: 200})
+	progress.Report(engine.ProgressEvent{Kind: engine.ProgressRunCompleted})
+	if got := output.String(); got != "" {
+		t.Fatalf("non-TTY progress must be silent before the final summary: %q", got)
+	}
+}
+
+func TestRunProgressShowsOneAnimatedRowPerTestAtAnyWorkerCount(t *testing.T) {
+	var output bytes.Buffer
+	progress := newParallelRunProgress(&output, result.NewRedactor())
+	progress.terminal = true
+	progress.Report(engine.ProgressEvent{Kind: engine.ProgressRunStarted, TestsTotal: 2})
+	progress.Report(engine.ProgressEvent{Kind: engine.ProgressTestStarted, TestName: "alpha"})
+	progress.Report(engine.ProgressEvent{Kind: engine.ProgressStepStarted, TestName: "alpha", StepName: "request"})
+	progress.Report(engine.ProgressEvent{Kind: engine.ProgressTestStarted, TestName: "beta"})
+	progress.Report(engine.ProgressEvent{Kind: engine.ProgressTestCompleted, TestName: "beta", Status: model.StatusFailed, DurationMS: 100})
+	progress.Report(engine.ProgressEvent{Kind: engine.ProgressTestCompleted, TestName: "alpha", Status: model.StatusPassed, DurationMS: 200})
+	progress.Report(engine.ProgressEvent{Kind: engine.ProgressRunCompleted})
 	got := output.String()
-	for _, want := range []string{"Running 2 tests concurrently", "1/2 beta", "2/2 alpha"} {
+	for _, want := range []string{"\x1b[2A", "alpha · request", "beta (0.1s)", "alpha (0.2s)", "✓", "✗"} {
 		if !strings.Contains(got, want) {
 			t.Fatalf("missing %q in %q", want, got)
 		}
-	}
-	if strings.Contains(got, "shared step") {
-		t.Fatalf("interleaved step was attributed to a test: %q", got)
 	}
 }

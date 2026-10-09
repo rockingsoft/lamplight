@@ -349,7 +349,7 @@ func TestRunReportsProgressMilestones(t *testing.T) {
 	if run.Status != model.StatusPassed {
 		t.Fatalf("run=%#v", run)
 	}
-	want := []ProgressEventKind{ProgressRunStarted, ProgressDatasourceStarted, ProgressDatasourceCompleted, ProgressTestStarted, ProgressStepStarted, ProgressTriggerStarted, ProgressTriggerCompleted, ProgressTracePolling, ProgressTraceObserved, ProgressStepCompleted, ProgressTestCompleted}
+	want := []ProgressEventKind{ProgressRunStarted, ProgressDatasourceStarted, ProgressDatasourceCompleted, ProgressTestStarted, ProgressStepStarted, ProgressTriggerStarted, ProgressTriggerCompleted, ProgressTracePolling, ProgressTraceObserved, ProgressStepCompleted, ProgressTestCompleted, ProgressRunCompleted}
 	if len(events) != len(want) {
 		t.Fatalf("events=%#v", events)
 	}
@@ -425,7 +425,7 @@ func TestRunStepErrorAndCancellationBranches(t *testing.T) {
 			if factory, ok := projectFactory(project); ok {
 				eng.TraceFactory = factory
 			}
-			result, _ := eng.runStep(ctx, project, project.Tests[0].Steps[0], map[string]map[string]cty.Value{})
+			result, _ := eng.runStep(ctx, project, project.Tests[0].Name, project.Tests[0].Steps[0], map[string]map[string]cty.Value{})
 			if result.Status != test.want || (test.code != "" && (result.Error == nil || result.Error.Code != test.code)) {
 				t.Fatalf("result=%#v", result)
 			}
@@ -437,7 +437,7 @@ func TestRunStepErrorAndCancellationBranches(t *testing.T) {
 		project := engineProject(spanStep(t, model.QuantityRule{Kind: "at_least", Value: 1}, `true`))
 		project.Datasource = &datasource.Fake{Script: []datasource.ScriptedObservation{{Observation: model.TraceObservation{Found: true, Valid: true}}}}
 		http := &recordingHTTP{response: model.Response{Headers: map[string][]string{}}, cancel: cancel}
-		result, _ := (&Engine{HTTP: http, TraceFactory: traceFactory{context: model.TestTraceContext{TraceID: "trace"}}, Clock: &engineClock{now: time.Unix(0, 0)}}).runStep(ctx, project, project.Tests[0].Steps[0], map[string]map[string]cty.Value{})
+		result, _ := (&Engine{HTTP: http, TraceFactory: traceFactory{context: model.TestTraceContext{TraceID: "trace"}}, Clock: &engineClock{now: time.Unix(0, 0)}}).runStep(ctx, project, project.Tests[0].Name, project.Tests[0].Steps[0], map[string]map[string]cty.Value{})
 		if result.Status != model.StatusCancelled {
 			t.Fatalf("result=%#v", result)
 		}

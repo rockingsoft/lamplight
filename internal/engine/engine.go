@@ -41,6 +41,7 @@ func (e *Engine) Run(ctx context.Context, project *model.Project) model.RunResul
 	run := model.RunResult{SchemaVersion: 1, RunID: randomID(), StartedAt: started, Tests: []model.TestResult{}}
 	debuglog.Debug(ctx, "engine run started", "run_id", run.RunID)
 	e.progress(ProgressEvent{Kind: ProgressRunStarted, RunID: run.RunID, TestsTotal: len(projectTests(project))})
+	defer e.progress(ProgressEvent{Kind: ProgressRunCompleted, RunID: run.RunID})
 	if project == nil || project.Definition == nil || e.HTTP == nil {
 		run.Status = model.StatusError
 		run.Summary.Errors = 1
@@ -148,7 +149,7 @@ func (e *Engine) runTest(ctx context.Context, project *model.Project, test model
 	tr := model.TestResult{Name: test.Name, Tags: test.Tags, File: test.File, Status: model.StatusPassed, Steps: []model.StepResult{}}
 	stepOutputs := map[string]map[string]cty.Value{}
 	for index, step := range test.Steps {
-		sr, technical := e.runStep(ctx, project, step, stepOutputs)
+		sr, technical := e.runStep(ctx, project, test.Name, step, stepOutputs)
 		tr.Steps = append(tr.Steps, sr)
 		if sr.Status != model.StatusPassed {
 			tr.Status = sr.Status
@@ -161,16 +162,16 @@ func (e *Engine) runTest(ctx context.Context, project *model.Project, test model
 	return tr, false
 }
 
-func (e *Engine) runStep(ctx context.Context, project *model.Project, step model.StepDefinition, previous map[string]map[string]cty.Value) (model.StepResult, bool) {
+func (e *Engine) runStep(ctx context.Context, project *model.Project, testName string, step model.StepDefinition, previous map[string]map[string]cty.Value) (model.StepResult, bool) {
 	started := time.Now()
 	sr := model.StepResult{Name: step.Name, ExecutionID: randomID(), Status: model.StatusPassed, Checks: []model.CheckResult{}}
 	debuglog.Debug(ctx, "step started", "name", step.Name, "execution_id", sr.ExecutionID, "trigger", step.Trigger.Kind)
-	e.progress(ProgressEvent{Kind: ProgressStepStarted, StepName: step.Name, Trigger: step.Trigger.Kind})
+	e.progress(ProgressEvent{Kind: ProgressStepStarted, TestName: testName, StepName: step.Name, Trigger: step.Trigger.Kind})
 	finish := func(status model.Status) (model.StepResult, bool) {
 		sr.Status = status
 		sr.DurationMS = time.Since(started).Milliseconds()
 		debuglog.Debug(ctx, "step completed", "name", step.Name, "status", status, "duration_ms", sr.DurationMS, "checks", len(sr.Checks))
-		e.progress(ProgressEvent{Kind: ProgressStepCompleted, StepName: step.Name, Trigger: step.Trigger.Kind, Status: status, DurationMS: sr.DurationMS})
+		e.progress(ProgressEvent{Kind: ProgressStepCompleted, TestName: testName, StepName: step.Name, Trigger: step.Trigger.Kind, Status: status, DurationMS: sr.DurationMS})
 		return sr, status == model.StatusError || status == model.StatusCancelled
 	}
 	if ctx.Err() != nil {

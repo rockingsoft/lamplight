@@ -390,8 +390,8 @@ func TestRunContinuesByDefaultAndSupportsFailFastWithCleanJSON(t *testing.T) {
 			if len(run.Tests) != 2 || run.Tests[0].Status != model.StatusError || run.Tests[1].Status != test.wantSecond {
 				t.Fatalf("tests=%#v\nstdout=%s\nstderr=%s", run.Tests, stdout.String(), stderr.String())
 			}
-			if !strings.Contains(stderr.String(), "Running 2 tests") {
-				t.Errorf("pretty progress missing from stderr: %q", stderr.String())
+			if stderr.Len() != 0 {
+				t.Errorf("non-TTY run emitted partial progress: %q", stderr.String())
 			}
 		})
 	}
