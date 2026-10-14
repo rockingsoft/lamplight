@@ -68,6 +68,9 @@ func TestServerListsReadsWritesAndRollsBack(t *testing.T) {
 	if len(capabilities.Triggers) != 10 || len(capabilities.Functions) == 0 {
 		t.Fatalf("capabilities=%#v", capabilities)
 	}
+	if capabilities.StepReuse.ReferenceSyntax != "ref = TEST.steps.STEP" || !containsValue(capabilities.Checks.ResponseContext, "params") {
+		t.Fatalf("step reuse not advertised: %#v", capabilities)
+	}
 	metricContext := strings.Join(capabilities.Checks.MetricContext, ",")
 	for _, field := range []string{"metric.type", "metric.attributes", "metric.resource"} {
 		if !strings.Contains(metricContext, field) {
@@ -85,6 +88,27 @@ func TestServerListsReadsWritesAndRollsBack(t *testing.T) {
 		if validateResult.IsError {
 			t.Fatalf("validate %s failed: %#v", trigger.Block, validateResult.Content)
 		}
+	}
+	reuseResult := call(t, ctx, clientSession, "lamplight_scaffold_test", map[string]any{"ref": "health.steps.get", "test_name": "reused", "step_name": "request"})
+	if reuseResult.IsError {
+		t.Fatalf("reuse scaffold failed: %#v", reuseResult.Content)
+	}
+	var reuse scaffoldOutput
+	decodeStructured(t, reuseResult, &reuse)
+	if reuse.Ref != "health.steps.get" || !strings.Contains(reuse.Content, "ref = health.steps.get") {
+		t.Fatalf("reuse scaffold=%#v", reuse)
+	}
+	if validated := call(t, ctx, clientSession, "lamplight_validate_test_content", map[string]any{"path": "reused.wick", "content": reuse.Content}); validated.IsError {
+		t.Fatalf("reuse scaffold validation failed: %#v", validated.Content)
+	}
+	if invalid := call(t, ctx, clientSession, "lamplight_scaffold_test", map[string]any{"trigger": "http_request", "ref": "health.steps.get"}); !invalid.IsError {
+		t.Fatal("scaffold accepted both trigger and ref")
+	}
+	stepsReference := call(t, ctx, clientSession, "lamplight_get_dsl_reference", map[string]any{"topic": "steps"})
+	var stepsGuide referenceOutput
+	decodeStructured(t, stepsReference, &stepsGuide)
+	if !strings.Contains(stepsGuide.Reference, "TEST.steps.STEP") || !strings.Contains(stepsGuide.Reference, "params") {
+		t.Fatalf("steps reference=%#v", stepsGuide)
 	}
 	referenceResult := call(t, ctx, clientSession, "lamplight_get_dsl_reference", map[string]any{"topic": "checks"})
 	var reference referenceOutput

@@ -35,6 +35,9 @@ Read [references/lamplight-authoring.md](references/lamplight-authoring.md) befo
    - gate on the response when one exists;
    - add named span checks for important internal outcomes and side effects;
    - use explicit variables for environment-specific values and secrets.
+   - when a step such as login is shared, inspect its declared `params` and
+     reuse it with `ref = TEST.steps.STEP`; pass only declared overrides and
+     read its outputs under the local step name.
 4. Run `lamplight validate` before any execution.
 5. Run one selected test with JSON output and retained artifacts when execution is authorized:
 

@@ -123,6 +123,57 @@ test "create_order" {
 
 The attribute names in this example are illustrative. Replace them with the exact normalized attributes and types emitted by the target instrumentation.
 
+## Reusing a parameterized step
+
+Use this syntax only when the installed Lamplight version advertises step reuse
+through `lamplight_get_capabilities` or its bundled reference. A concrete step
+declares parameter defaults. A caller uses `ref` and may override declared
+parameters:
+
+```hcl
+variable "BASE_URL" { type = string }
+variable "DEFAULT_EMAIL" { type = string }
+variable "CHECKOUT_EMAIL" { type = string }
+
+test "auth" {
+  step "login" {
+    params = { email = var.DEFAULT_EMAIL }
+
+    http_request {
+      method = "POST"
+      url    = "${var.BASE_URL}/login"
+      body   = jsonencode({ email = params.email })
+    }
+
+    outputs = { token = response.json.token }
+  }
+}
+
+test "checkout" {
+  step "authenticate" {
+    ref    = auth.steps.login
+    params = { email = var.CHECKOUT_EMAIL }
+  }
+
+  step "order" {
+    http_request {
+      method = "POST"
+      url    = "${var.BASE_URL}/orders"
+      headers = {
+        Authorization = "Bearer ${steps.authenticate.outputs.token}"
+      }
+    }
+  }
+}
+```
+
+The referenced definition runs as a fresh step inside `checkout`, with its own
+checks, trace, and outputs. Selecting `checkout` does not execute `auth` as a
+separate test. Defaults use `var`; overrides may use `var` and earlier steps in
+the calling test. A `ref` step contains only `ref` and optional `params`; it
+cannot reference another `ref` step. Use environment variables for sensitive
+values and run `lamplight validate` before execution.
+
 ## Check semantics
 
 A check contains `response`, `spans`, or both. When both exist, both must pass. If a response condition fails, Lamplight stops that test before polling spans for the step.
@@ -142,7 +193,9 @@ Available span fields include:
 - `span.attributes`, preserving normalized scalar types;
 - `resource`, the resource-attribute map, accessed as `resource["service.name"]`.
 
-Span predicates can also reference `response`, declared `var` values, and prior `steps` outputs. Do not use `resource.attributes`; there is no wrapper.
+Span predicates can also reference `response`, declared `var` values, prior
+`steps` outputs, and the containing step's `params`. Do not use
+`resource.attributes`; there is no wrapper.
 
 ## Polling semantics
 

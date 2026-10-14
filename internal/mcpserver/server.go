@@ -51,9 +51,9 @@ func New(options Options) *mcp.Server {
 	mcp.AddTool(server, &mcp.Tool{Name: "lamplight_format_project_config", Description: "Format the active .lamplight configuration using the canonical HCL formatter. Requires its current SHA-256."}, svc.formatProjectConfig)
 	mcp.AddTool(server, &mcp.Tool{Name: "lamplight_lint_project", Description: "Validate the complete project and report .wick files that are not canonically formatted. Does not execute tests or modify files."}, svc.lint)
 	mcp.AddTool(server, &mcp.Tool{Name: "lamplight_run_tests", Description: "Run all tests or include/exclude tests selected by exact name, definition files, or tags and return the structured Lamplight JSON result."}, svc.run)
-	mcp.AddTool(server, &mcp.Tool{Name: "lamplight_get_capabilities", Description: "Return the authoritative DSL inventory, including every supported trigger, attributes, propagation behavior, checks, functions, targets, and datasources."}, svc.capabilities)
+	mcp.AddTool(server, &mcp.Tool{Name: "lamplight_get_capabilities", Description: "Return the authoritative DSL inventory, including triggers, step reuse, checks, functions, targets, and datasources."}, svc.capabilities)
 	mcp.AddTool(server, &mcp.Tool{Name: "lamplight_get_dsl_reference", Description: "Return concise authoring guidance for one DSL topic without reading or changing project files."}, svc.reference)
-	mcp.AddTool(server, &mcp.Tool{Name: "lamplight_scaffold_test", Description: "Generate a formatted, non-writing .wick scaffold for any trigger returned by lamplight_get_capabilities."}, svc.scaffold)
+	mcp.AddTool(server, &mcp.Tool{Name: "lamplight_scaffold_test", Description: "Generate a formatted, non-writing .wick scaffold for a supported trigger or static step reference."}, svc.scaffold)
 	mcp.AddTool(server, &mcp.Tool{Name: "lamplight_validate_test_content", Description: "Validate prospective complete .wick content against the current project without writing or replacing files."}, svc.validateContent)
 	mcp.AddTool(server, &mcp.Tool{Name: "lamplight_observe_trace", Description: "Read one existing trace through the configured datasource and return normalized, redacted span evidence for authoring checks. Does not execute a trigger or modify project files."}, svc.observeTrace)
 	return server
