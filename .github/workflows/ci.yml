@@ -137,6 +137,9 @@ jobs:
             "$image_context"
           echo "$bin_dir" >> "$GITHUB_PATH"
 
+      - name: Run reusable step E2E
+        run: python3 testdata/reusable-steps-e2e/run.py "$RUNNER_TEMP/lamplight-bin/lamplight"
+
       - name: Run Lamplight E2E suite
         working-directory: pokeshop
         env:

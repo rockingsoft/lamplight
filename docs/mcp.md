@@ -40,9 +40,9 @@ Example client configuration:
 | `lamplight_format_project_config` | Applies canonical HCL formatting to the active `.lamplight` file. |
 | `lamplight_lint_project` | Reports DSL diagnostics plus `.lamplight` and `.wick` files needing formatting without modifying anything. |
 | `lamplight_run_tests` | Runs all tests or includes/excludes tests selected by exact name, definition files, or any supplied tag against an optional named target, and returns the JSON run result. |
-| `lamplight_get_capabilities` | Returns the authoritative inventory for every trigger, checks, expression functions, variables, targets, and datasources supported by the running binary. |
-| `lamplight_get_dsl_reference` | Returns concise authoring guidance for a selected DSL topic. |
-| `lamplight_scaffold_test` | Produces a formatted, non-writing `.wick` scaffold for any supported trigger. |
+| `lamplight_get_capabilities` | Returns the authoritative inventory for triggers, step reuse, checks, expression functions, variables, targets, and datasources supported by the running binary. |
+| `lamplight_get_dsl_reference` | Returns concise authoring guidance for a selected DSL topic, including `steps` with `ref` and `params`. |
+| `lamplight_scaffold_test` | Produces a formatted, non-writing `.wick` scaffold for a supported trigger or a static `TEST.steps.STEP` reference. |
 | `lamplight_validate_test_content` | Validates prospective complete `.wick` content against the current project without changing the filesystem. |
 | `lamplight_observe_trace` | Reads an existing trace through the configured datasource and returns normalized, redacted spans without executing a trigger. |
 
@@ -55,6 +55,8 @@ Agents should discover the running binary instead of relying on a memorized DSL:
 2. Read only the required topic with `lamplight_get_dsl_reference`.
 3. Use `lamplight_scaffold_test` for a syntactically valid starting point, or
    inspect an existing test and prepare complete replacement content.
+   For a reused step, pass `ref` instead of `trigger`, then add overrides only
+   for parameters declared on its concrete source step.
 4. When a representative trace ID exists, call `lamplight_observe_trace` and
    derive predicates from the normalized service names, span kinds, statuses,
    attributes, resource attributes, and value types it returns.

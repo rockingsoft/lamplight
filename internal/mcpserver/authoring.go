@@ -27,6 +27,7 @@ type checkCapability struct {
 
 type capabilitiesOutput struct {
 	Triggers        []hclloader.TriggerCapability `json:"triggers"`
+	StepReuse       stepReuseCapability           `json:"step_reuse"`
 	Checks          checkCapability               `json:"checks"`
 	VariableTypes   []string                      `json:"variable_types"`
 	TargetRuntimes  []string                      `json:"target_runtimes"`
@@ -34,6 +35,14 @@ type capabilitiesOutput struct {
 	MetricsKinds    []string                      `json:"metrics_kinds"`
 	Functions       []string                      `json:"functions"`
 	Unsupported     []string                      `json:"unsupported"`
+}
+
+type stepReuseCapability struct {
+	ReferenceSyntax string   `json:"reference_syntax"`
+	DefaultsContext []string `json:"defaults_context"`
+	OverrideContext []string `json:"override_context"`
+	BodyContext     []string `json:"body_context"`
+	Notes           []string `json:"notes"`
 }
 
 func (s *service) capabilities(_ context.Context, _ *mcp.CallToolRequest, _ emptyInput) (*mcp.CallToolResult, capabilitiesOutput, error) {
@@ -46,10 +55,21 @@ func (s *service) capabilities(_ context.Context, _ *mcp.CallToolRequest, _ empt
 	sort.Strings(datasources)
 	out := capabilitiesOutput{
 		Triggers: hclloader.TriggerCapabilities(),
+		StepReuse: stepReuseCapability{
+			ReferenceSyntax: "ref = TEST.steps.STEP",
+			DefaultsContext: []string{"var"},
+			OverrideContext: []string{"var", "steps"},
+			BodyContext:     []string{"params", "var", "steps"},
+			Notes: []string{
+				"Declare params = { NAME = EXPRESSION } on a concrete step to provide defaults.",
+				"A reference executes a fresh step under its local name, with its own trace, checks, and outputs.",
+				"A referencing step contains only ref and optional params; references to another reference are unsupported.",
+			},
+		},
 		Checks: checkCapability{
-			ResponseContext:       []string{"response.status_code", "response.headers", "response.body", "response.json", "var", "steps"},
-			SpanContext:           []string{"span.trace_id", "span.span_id", "span.parent_span_id", "span.name", "span.kind", "span.status", "span.status_message", "span.duration", "span.attributes", "resource", "response", "var", "steps"},
-			MetricContext:         []string{"metric.name", "metric.type", "metric.labels", "metric.attributes", "metric.resource", "metric.previous_value", "metric.value", "metric.delta", "response", "var", "steps"},
+			ResponseContext:       []string{"response.status_code", "response.headers", "response.body", "response.json", "var", "steps", "params"},
+			SpanContext:           []string{"span.trace_id", "span.span_id", "span.parent_span_id", "span.name", "span.kind", "span.status", "span.status_message", "span.duration", "span.attributes", "resource", "response", "var", "steps", "params"},
+			MetricContext:         []string{"metric.name", "metric.type", "metric.labels", "metric.attributes", "metric.resource", "metric.previous_value", "metric.value", "metric.delta", "response", "var", "steps", "params"},
 			QuantityRules:         []string{"at_least", "at_most", "exactly"},
 			ObservationWindowType: "duration",
 			Notes: []string{
@@ -86,11 +106,11 @@ type referenceOutput struct {
 }
 
 var referenceTopics = map[string]string{
-	"overview":    "A project has one .lamplight file and recursively discovered .wick files below project.base_dir. Tests contain ordered steps; every step has exactly one trigger, optional outputs, and zero or more named checks.",
+	"overview":    "A project has one .lamplight file and recursively discovered .wick files below project.base_dir. Tests contain ordered steps; a concrete step has one trigger, optional outputs, and zero or more named checks. A ref step reuses a concrete step definition.",
 	"variables":   "Declare variable blocks in .lamplight or discovered .wick files. Supported types are string, int, and duration. Mark credentials sensitive = true and supply them through LAMPLIGHT_VAR_NAME. Runtime precedence is --var, environment, selected target, then default.",
-	"steps":       "Steps execute in source order. Trigger expressions can reference var and prior steps. Outputs can reference response, var, and prior steps. Later steps use steps.STEP.outputs.NAME.",
+	"steps":       "Steps execute in source order. A concrete step may declare params = { NAME = var.VALUE }; its trigger, outputs, and checks can use params.NAME. A caller declares a step with ref = TEST.steps.STEP and optional params overrides. ref executes a fresh step under the caller's local name, and later steps use steps.LOCAL.outputs.NAME. Defaults use var; overrides use var or earlier steps. A ref step cannot declare a trigger, checks, or outputs, and cannot reference another ref step.",
 	"triggers":    "Call lamplight_get_capabilities for the authoritative trigger inventory, required and optional attributes, propagation mode, and a complete example for every supported trigger block.",
-	"checks":      "Response expressions use response, var, and steps. Span matching and assertions also use span and resource. Metric checks always select series with PromQL; assertions use metric, whose delta is the post-trigger query value minus the pre-trigger query value. Span and metric blocks each require exactly one of at_least, at_most, or exactly.",
+	"checks":      "Response expressions use response, var, steps, and params. Span matching and assertions also use span and resource. Metric checks always select series with PromQL; assertions use metric, whose delta is the post-trigger query value minus the pre-trigger query value. Span and metric blocks each require exactly one of at_least, at_most, or exactly.",
 	"expressions": "Lamplight exposes a small pure HCL expression surface. Call lamplight_get_capabilities for the current function list. Attribute maps use bracket access for semantic keys, for example resource[\"service.name\"] and span.attributes[\"http.request.method\"]. Numeric and boolean telemetry values are not strings.",
 	"targets":     "The implicit local target runs in the MCP process environment. docker_compose and kubernetes start ephemeral remote executors. Target values may set declared non-sensitive variables. Executable k6 scripts use the local target; an explicit cloud_run executor may distribute the k6 process from that target.",
 	"workflow":    "Inspect capabilities and existing files, scaffold or draft the smallest observable contract, validate content without writing, write with the current SHA-256 precondition, lint the project, then run one selected test. Derive span predicates from representative trace evidence and report static validation separately from live execution.",
@@ -115,29 +135,43 @@ func (s *service) reference(_ context.Context, _ *mcp.CallToolRequest, in refere
 }
 
 type scaffoldInput struct {
-	Trigger  string `json:"trigger" jsonschema:"trigger block returned by lamplight_get_capabilities"`
+	Trigger  string `json:"trigger,omitempty" jsonschema:"trigger block returned by lamplight_get_capabilities; use this or ref"`
+	Ref      string `json:"ref,omitempty" jsonschema:"static TEST.steps.STEP reference; use this or trigger"`
 	TestName string `json:"test_name,omitempty" jsonschema:"test label; defaults to example"`
 	StepName string `json:"step_name,omitempty" jsonschema:"valid HCL identifier; defaults to trigger"`
 }
 
 type scaffoldOutput struct {
 	Trigger string   `json:"trigger"`
+	Ref     string   `json:"ref,omitempty"`
 	Content string   `json:"content"`
 	Notes   []string `json:"notes"`
 }
 
 func (s *service) scaffold(_ context.Context, _ *mcp.CallToolRequest, in scaffoldInput) (*mcp.CallToolResult, scaffoldOutput, error) {
-	var capability *hclloader.TriggerCapability
-	for _, candidate := range hclloader.TriggerCapabilities() {
-		if candidate.Block == in.Trigger {
-			copy := candidate
-			capability = &copy
-			break
-		}
+	if (in.Trigger == "") == (in.Ref == "") {
+		out := scaffoldOutput{Trigger: in.Trigger, Ref: in.Ref}
+		return toolError("supply exactly one of trigger or ref", out), out, nil
 	}
-	if capability == nil {
-		out := scaffoldOutput{Trigger: in.Trigger}
-		return toolError(fmt.Sprintf("unsupported trigger %q; call lamplight_get_capabilities", in.Trigger), out), out, nil
+	var capability *hclloader.TriggerCapability
+	if in.Trigger != "" {
+		for _, candidate := range hclloader.TriggerCapabilities() {
+			if candidate.Block == in.Trigger {
+				copy := candidate
+				capability = &copy
+				break
+			}
+		}
+		if capability == nil {
+			out := scaffoldOutput{Trigger: in.Trigger}
+			return toolError(fmt.Sprintf("unsupported trigger %q; call lamplight_get_capabilities", in.Trigger), out), out, nil
+		}
+	} else {
+		parts := strings.Split(in.Ref, ".")
+		if len(parts) != 3 || parts[1] != "steps" || !hclsyntax.ValidIdentifier(parts[0]) || !hclsyntax.ValidIdentifier(parts[2]) {
+			out := scaffoldOutput{Ref: in.Ref}
+			return toolError("ref must be TEST.steps.STEP", out), out, nil
+		}
 	}
 	testName := strings.TrimSpace(in.TestName)
 	if testName == "" {
@@ -152,14 +186,20 @@ func (s *service) scaffold(_ context.Context, _ *mcp.CallToolRequest, in scaffol
 		return toolError("step_name must be a valid HCL identifier", out), out, nil
 	}
 	quotedTestName := strings.ReplaceAll(strings.ReplaceAll(testName, "\\", "\\\\"), "\"", "\\\"")
-	source := fmt.Sprintf("test \"%s\" {\n  tags = [\"draft\"]\n\n  step \"%s\" {\n%s\n  }\n}\n", quotedTestName, stepName, indent(capability.Example, "    "))
+	stepBody := "    ref = " + in.Ref
+	if capability != nil {
+		stepBody = indent(capability.Example, "    ")
+	}
+	source := fmt.Sprintf("test \"%s\" {\n  tags = [\"draft\"]\n\n  step \"%s\" {\n%s\n  }\n}\n", quotedTestName, stepName, stepBody)
 	formatted := hclwrite.Format([]byte(source))
 	out := scaffoldOutput{
 		Trigger: in.Trigger,
+		Ref:     in.Ref,
 		Content: string(formatted),
 		Notes: []string{
 			"Replace placeholder endpoints, payloads, IDs, and scripts with non-sensitive test values.",
-			"Add response checks for the external contract; derive span checks from trace evidence and metric checks from the actual Prometheus exposition.",
+			"Add response checks for the external contract on a concrete step; derive span checks from trace evidence and metric checks from the actual Prometheus exposition.",
+			"For ref steps, add params overrides only for parameters declared by the source step.",
 			"Validate this content with lamplight_validate_test_content before writing it.",
 		},
 	}

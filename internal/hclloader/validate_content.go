@@ -47,6 +47,7 @@ func (loader Loader) ValidateTestContent(options config.Options, path string, co
 		return &prospective, append(diags, diagnostic.FromHCL(hclDiags, diagnostic.CodeParse)...)
 	}
 	diags = append(diags, parseDefinitions(file, &prospective)...)
+	diags = append(diags, resolveStepReferences(&prospective)...)
 	diags = append(diags, validateReferences(&prospective)...)
 	return &prospective, diags
 }

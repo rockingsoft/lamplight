@@ -182,12 +182,16 @@ type CheckDefinition struct {
 }
 
 type StepDefinition struct {
-	Name    string
-	HTTP    HTTPRequestDefinition
-	Trigger TriggerDefinition
-	Outputs map[string]hcl.Expression
-	Checks  []CheckDefinition
-	Range   SourceRange
+	Name   string
+	Ref    string
+	Params map[string]hcl.Expression
+	// ParamDefaults declares the parameters accepted by a concrete step.
+	ParamDefaults map[string]hcl.Expression
+	HTTP          HTTPRequestDefinition
+	Trigger       TriggerDefinition
+	Outputs       map[string]hcl.Expression
+	Checks        []CheckDefinition
+	Range         SourceRange
 }
 
 type TestDefinition struct {

@@ -192,6 +192,11 @@ func (e *Engine) runStep(ctx context.Context, project *model.Project, testName s
 		sr.TraceID = string(created.TraceID)
 	}
 	stepsValue := stepsCTY(previous)
+	paramsValue, paramErr := evaluateParams(step, project.Variables, stepsValue)
+	if paramErr != nil {
+		sr.Error = diagnostic("parameter_evaluation", paramErr.Error())
+		return finish(model.StatusError)
+	}
 	metricQueries := map[string]string{}
 	metricBaselines := map[string]model.MetricSnapshot{}
 	if stepNeedsMetrics(step) {
@@ -199,7 +204,7 @@ func (e *Engine) runStep(ctx context.Context, project *model.Project, testName s
 			if check.Metrics == nil {
 				continue
 			}
-			query, queryErr := metricQuery(check.Metrics.Query, project.Variables, stepsValue)
+			query, queryErr := metricQuery(check.Metrics.Query, project.Variables, stepsValue, paramsValue)
 			if queryErr != nil {
 				sr.Error = diagnostic("metrics_query", fmt.Sprintf("check %q: %v", check.Name, queryErr))
 				return finish(model.StatusError)
@@ -222,7 +227,7 @@ func (e *Engine) runStep(ctx context.Context, project *model.Project, testName s
 	executionCode := "trigger_execution"
 	if step.Trigger.Kind == "" || step.Trigger.Kind == model.TriggerHTTP {
 		executionCode = "http_execution"
-		req, evalErr := evaluateRequest(step.HTTP, project.Variables, stepsValue)
+		req, evalErr := evaluateRequest(step.HTTP, project.Variables, stepsValue, paramsValue)
 		if evalErr != nil {
 			sr.Error = diagnostic("request_evaluation", evalErr.Error())
 			return finish(model.StatusError)
@@ -236,7 +241,7 @@ func (e *Engine) runStep(ctx context.Context, project *model.Project, testName s
 			sr.Error = diagnostic("trigger_execution", "trigger executor is not configured")
 			return finish(model.StatusError)
 		}
-		req, evalErr := evaluateTrigger(step.Trigger, project.Variables, stepsValue)
+		req, evalErr := evaluateTrigger(step.Trigger, project.Variables, stepsValue, paramsValue)
 		if evalErr != nil {
 			sr.Error = diagnostic("trigger_evaluation", evalErr.Error())
 			return finish(model.StatusError)
@@ -272,7 +277,7 @@ func (e *Engine) runStep(ctx context.Context, project *model.Project, testName s
 
 	outputs := map[string]cty.Value{}
 	for _, name := range sortedExpressions(step.Outputs) {
-		value, diags := expr.Evaluate(step.Outputs[name], expr.OutputContext(response, project.Variables, stepsValue))
+		value, diags := expr.Evaluate(step.Outputs[name], expr.OutputContext(response, project.Variables, stepsValue, paramsValue))
 		if diags.HasErrors() || !value.IsKnown() {
 			sr.Error = diagnostic("output_evaluation", fmt.Sprintf("output %q: %s", name, diags.Error()))
 			return finish(model.StatusError)
@@ -287,7 +292,7 @@ func (e *Engine) runStep(ctx context.Context, project *model.Project, testName s
 	for _, check := range step.Checks {
 		cr := model.CheckResult{Name: check.Name, Status: model.StatusPassed}
 		for _, name := range sortedExpressions(check.Response) {
-			value, diags := expr.Evaluate(check.Response[name], expr.ResponseContext(response, project.Variables, stepsValue))
+			value, diags := expr.Evaluate(check.Response[name], expr.ResponseContext(response, project.Variables, stepsValue, paramsValue))
 			ev := model.AssertionEvidence{Name: name, Source: model.Range(check.Response[name].Range())}
 			if diags.HasErrors() {
 				ev.Error = diags.Error()
@@ -310,7 +315,7 @@ func (e *Engine) runStep(ctx context.Context, project *model.Project, testName s
 		sr.Checks = append(sr.Checks, cr)
 		if check.Spans != nil {
 			definition := check
-			spanChecks = append(spanChecks, poller.SpanCheck{Name: check.Name, Rule: check.Spans.Rule, Match: spanMatcher(definition, response, project.Variables, stepsValue), Assertions: spanAssertions(definition, response, project.Variables, stepsValue)})
+			spanChecks = append(spanChecks, poller.SpanCheck{Name: check.Name, Rule: check.Spans.Rule, Match: spanMatcher(definition, response, project.Variables, stepsValue, paramsValue), Assertions: spanAssertions(definition, response, project.Variables, stepsValue, paramsValue)})
 		}
 	}
 	if responseFailed {
@@ -320,7 +325,7 @@ func (e *Engine) runStep(ctx context.Context, project *model.Project, testName s
 	for _, check := range step.Checks {
 		if check.Metrics != nil {
 			definition := check
-			metricChecks = append(metricChecks, metricpoller.Check{Name: check.Name, Query: metricQueries[check.Name], Rule: check.Metrics.Rule, Assertions: metricAssertions(definition, response, project.Variables, stepsValue)})
+			metricChecks = append(metricChecks, metricpoller.Check{Name: check.Name, Query: metricQueries[check.Name], Rule: check.Metrics.Rule, Assertions: metricAssertions(definition, response, project.Variables, stepsValue, paramsValue)})
 		}
 	}
 	type metricPollingResult struct {
@@ -499,8 +504,8 @@ func prepareTriggerRequest(request *model.TriggerRequest, definition *model.Proj
 	return nil
 }
 
-func evaluateTrigger(def model.TriggerDefinition, variables map[string]model.SensitiveValue, steps cty.Value) (model.TriggerRequest, error) {
-	ctx := &hcl.EvalContext{Variables: map[string]cty.Value{"var": expr.Variables(variables), "steps": steps}, Functions: expr.Functions()}
+func evaluateTrigger(def model.TriggerDefinition, variables map[string]model.SensitiveValue, steps cty.Value, params ...cty.Value) (model.TriggerRequest, error) {
+	ctx := &hcl.EvalContext{Variables: map[string]cty.Value{"var": expr.Variables(variables), "steps": steps, "params": paramValue(params)}, Functions: expr.Functions()}
 	request := model.TriggerRequest{Kind: def.Kind, Attributes: map[string]any{}}
 	for _, name := range sortedExpressions(def.Attributes) {
 		value, diags := expr.Evaluate(def.Attributes[name], ctx)
@@ -539,8 +544,31 @@ func evaluateTrigger(def model.TriggerDefinition, variables map[string]model.Sen
 	return request, nil
 }
 
-func evaluateRequest(def model.HTTPRequestDefinition, variables map[string]model.SensitiveValue, steps cty.Value) (model.HTTPRequest, error) {
-	ctx := &hcl.EvalContext{Variables: map[string]cty.Value{"var": expr.Variables(variables), "steps": steps}, Functions: expr.Functions()}
+func paramValue(params []cty.Value) cty.Value {
+	if len(params) == 0 || params[0] == cty.NilVal {
+		return cty.EmptyObjectVal
+	}
+	return params[0]
+}
+
+func evaluateParams(step model.StepDefinition, variables map[string]model.SensitiveValue, steps cty.Value) (cty.Value, error) {
+	values := make(map[string]cty.Value, len(step.ParamDefaults))
+	for _, name := range sortedExpressions(step.ParamDefaults) {
+		expression := step.ParamDefaults[name]
+		if override, ok := step.Params[name]; ok {
+			expression = override
+		}
+		value, diags := expr.Evaluate(expression, &hcl.EvalContext{Variables: map[string]cty.Value{"var": expr.Variables(variables), "steps": steps}, Functions: expr.Functions()})
+		if diags.HasErrors() || !value.IsKnown() || value.IsNull() {
+			return cty.NilVal, fmt.Errorf("parameter %q must evaluate to a known non-null value: %s", name, diags.Error())
+		}
+		values[name] = value
+	}
+	return cty.ObjectVal(values), nil
+}
+
+func evaluateRequest(def model.HTTPRequestDefinition, variables map[string]model.SensitiveValue, steps cty.Value, params ...cty.Value) (model.HTTPRequest, error) {
+	ctx := &hcl.EvalContext{Variables: map[string]cty.Value{"var": expr.Variables(variables), "steps": steps, "params": paramValue(params)}, Functions: expr.Functions()}
 	stringValue := func(name string, expression hcl.Expression, required bool) (string, error) {
 		if expression == nil {
 			if required {
@@ -576,9 +604,9 @@ func evaluateRequest(def model.HTTPRequestDefinition, variables map[string]model
 	return model.HTTPRequest{Method: method, URL: url, Headers: headers, Body: body}, nil
 }
 
-func spanMatcher(check model.CheckDefinition, response model.Response, variables map[string]model.SensitiveValue, steps cty.Value) func(model.Span) (bool, error) {
+func spanMatcher(check model.CheckDefinition, response model.Response, variables map[string]model.SensitiveValue, steps cty.Value, params ...cty.Value) func(model.Span) (bool, error) {
 	return func(span model.Span) (bool, error) {
-		ctx := expr.SpanContext(span, response, variables, steps)
+		ctx := expr.SpanContext(span, response, variables, steps, params...)
 		if check.Spans.Matching == nil {
 			return true, nil
 		}
@@ -607,12 +635,12 @@ func onlyMissingIndexErrors(diags hcl.Diagnostics) bool {
 	return found
 }
 
-func spanAssertions(check model.CheckDefinition, response model.Response, variables map[string]model.SensitiveValue, steps cty.Value) []poller.SpanAssertion {
+func spanAssertions(check model.CheckDefinition, response model.Response, variables map[string]model.SensitiveValue, steps cty.Value, params ...cty.Value) []poller.SpanAssertion {
 	assertions := make([]poller.SpanAssertion, 0, len(check.Spans.Assertions))
 	for _, name := range sortedExpressions(check.Spans.Assertions) {
 		expression := check.Spans.Assertions[name]
 		assertions = append(assertions, poller.SpanAssertion{Name: name, Source: model.Range(expression.Range()), Evaluate: func(span model.Span) (bool, error) {
-			value, diags := expr.Evaluate(expression, expr.SpanContext(span, response, variables, steps))
+			value, diags := expr.Evaluate(expression, expr.SpanContext(span, response, variables, steps, params...))
 			if diags.HasErrors() {
 				return false, fmt.Errorf("span assertion: %s", diags.Error())
 			}
@@ -622,23 +650,23 @@ func spanAssertions(check model.CheckDefinition, response model.Response, variab
 	return assertions
 }
 
-func metricQuery(expression hcl.Expression, variables map[string]model.SensitiveValue, steps cty.Value) (string, error) {
+func metricQuery(expression hcl.Expression, variables map[string]model.SensitiveValue, steps cty.Value, params ...cty.Value) (string, error) {
 	if expression == nil {
 		return "", nil
 	}
-	value, diags := expr.Evaluate(expression, &hcl.EvalContext{Variables: map[string]cty.Value{"var": expr.Variables(variables), "steps": steps}, Functions: expr.Functions()})
+	value, diags := expr.Evaluate(expression, &hcl.EvalContext{Variables: map[string]cty.Value{"var": expr.Variables(variables), "steps": steps, "params": paramValue(params)}, Functions: expr.Functions()})
 	if diags.HasErrors() || !value.IsKnown() || value.IsNull() || value.Type() != cty.String {
 		return "", fmt.Errorf("query must evaluate to a string: %s", diags.Error())
 	}
 	return value.AsString(), nil
 }
 
-func metricAssertions(check model.CheckDefinition, response model.Response, variables map[string]model.SensitiveValue, steps cty.Value) []metricpoller.Assertion {
+func metricAssertions(check model.CheckDefinition, response model.Response, variables map[string]model.SensitiveValue, steps cty.Value, params ...cty.Value) []metricpoller.Assertion {
 	assertions := make([]metricpoller.Assertion, 0, len(check.Metrics.Assertions))
 	for _, name := range sortedExpressions(check.Metrics.Assertions) {
 		expression := check.Metrics.Assertions[name]
 		assertions = append(assertions, metricpoller.Assertion{Name: name, Source: model.Range(expression.Range()), Evaluate: func(metric model.MetricPoint) (bool, error) {
-			value, diags := expr.Evaluate(expression, expr.MetricContext(metric, response, variables, steps))
+			value, diags := expr.Evaluate(expression, expr.MetricContext(metric, response, variables, steps, params...))
 			if diags.HasErrors() {
 				return false, fmt.Errorf("metric assertion: %s", diags.Error())
 			}

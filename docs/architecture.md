@@ -67,6 +67,10 @@ contains one trigger followed by outputs and checks. The current trigger type is
 - A technical error or cancellation stops the entire run. Remaining work is
   represented as `skipped` or `cancelled`.
 - Step outputs enter the `steps` namespace only after their step completes.
+- A `ref` step is expanded during project loading from a concrete step in
+  another test. It executes in the caller's order and writes outputs under its
+  local name. Parameter overrides are evaluated in the caller's context before
+  the trigger.
 - Test-level outputs are parsed and validated but are reserved in the current
   runtime; they are not evaluated or emitted.
 
