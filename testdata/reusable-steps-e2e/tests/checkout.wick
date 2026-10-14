@@ -1,0 +1,45 @@
+variable "BASE_URL" {}
+variable "SOURCE_EMAIL" {}
+variable "CALLER_EMAIL" {}
+
+test "auth" {
+  step "login" {
+    params = { email = var.SOURCE_EMAIL }
+
+    http_request {
+      method = "POST"
+      url    = "${var.BASE_URL}/login"
+      headers = {
+        Content-Type = "application/json"
+      }
+      body = jsonencode({ email = params.email })
+    }
+
+    outputs = { token = response.json.token }
+
+    check "logged in" {
+      response = { status = response.status_code == 200 }
+    }
+  }
+}
+
+test "checkout" {
+  step "authenticate" {
+    ref    = auth.steps.login
+    params = { email = var.CALLER_EMAIL }
+  }
+
+  step "order" {
+    http_request {
+      method = "POST"
+      url    = "${var.BASE_URL}/orders"
+      headers = {
+        Authorization = "Bearer ${steps.authenticate.outputs.token}"
+      }
+    }
+
+    check "created" {
+      response = { status = response.status_code == 201 }
+    }
+  }
+}
