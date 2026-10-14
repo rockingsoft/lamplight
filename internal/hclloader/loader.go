@@ -90,6 +90,7 @@ func (loader Loader) LoadProject(options config.Options) (*model.ProjectDefiniti
 		fileDiags := parseDefinitions(file, definition)
 		diags = append(diags, fileDiags...)
 	}
+	diags = append(diags, resolveStepReferences(definition)...)
 	if definition.DefaultTarget != "" {
 		if _, exists := definition.Targets[definition.DefaultTarget]; !exists && definition.DefaultTarget != "local" {
 			diags = append(diags, diagnostic.Error(diagnostic.CodeReference, fmt.Sprintf("default target %q is not declared", definition.DefaultTarget), root.ProjectRange, "declare the target or use local"))
@@ -504,7 +505,7 @@ func parseTest(block *hcl.Block, _ []byte) (model.TestDefinition, []model.Diagno
 }
 
 func parseStep(block *hcl.Block) (model.StepDefinition, []model.Diagnostic) {
-	step := model.StepDefinition{Range: model.Range(block.DefRange), Outputs: map[string]hcl.Expression{}}
+	step := model.StepDefinition{Range: model.Range(block.DefRange), Outputs: map[string]hcl.Expression{}, ParamDefaults: map[string]hcl.Expression{}}
 	var diags []model.Diagnostic
 	if len(block.Labels) != 1 {
 		return step, []model.Diagnostic{diagnostic.Error(diagnostic.CodeSchema, "step requires one name label", block.DefRange, "add a step name")}
@@ -517,8 +518,33 @@ func parseStep(block *hcl.Block) (model.StepDefinition, []model.Diagnostic) {
 	for _, capability := range TriggerCapabilities() {
 		triggerBlocks = append(triggerBlocks, hcl.BlockHeaderSchema{Type: capability.Block})
 	}
-	content, hclDiags := block.Body.Content(&hcl.BodySchema{Attributes: []hcl.AttributeSchema{{Name: "outputs"}}, Blocks: triggerBlocks})
+	content, hclDiags := block.Body.Content(&hcl.BodySchema{Attributes: []hcl.AttributeSchema{{Name: "outputs"}, {Name: "ref"}, {Name: "params"}}, Blocks: triggerBlocks})
 	diags = append(diags, diagnostic.FromHCL(hclDiags, diagnostic.CodeSchema)...)
+	if attr, ok := content.Attributes["params"]; ok {
+		values, ds := expressionMap(attr.Expr)
+		diags = append(diags, ds...)
+		diags = append(diags, validateIdentifiers("parameter", values)...)
+		step.ParamDefaults = values
+	}
+	if attr, ok := content.Attributes["ref"]; ok {
+		traversal, ds := hcl.AbsTraversalForExpr(attr.Expr)
+		valid := !ds.HasErrors() && len(traversal) == 3
+		if valid {
+			middle, middleOK := traversal[1].(hcl.TraverseAttr)
+			last, lastOK := traversal[2].(hcl.TraverseAttr)
+			valid = middleOK && middle.Name == "steps" && lastOK && hclsyntax.ValidIdentifier(traversal.RootName()) && hclsyntax.ValidIdentifier(last.Name)
+		}
+		if !valid {
+			diags = append(diags, diagnostic.Error(diagnostic.CodeSchema, "ref must be TEST.steps.STEP", attr.Expr.Range(), "use a static step reference"))
+		} else {
+			step.Ref = traversal.RootName() + "." + traversal[2].(hcl.TraverseAttr).Name
+		}
+		if len(content.Blocks) != 0 || content.Attributes["outputs"] != nil {
+			diags = append(diags, diagnostic.Error(diagnostic.CodeSchema, "referenced step cannot declare a trigger, checks, or outputs", block.DefRange, "keep only ref and params"))
+		}
+		step.Params, step.ParamDefaults = step.ParamDefaults, nil
+		return step, diags
+	}
 	var triggers []*hcl.Block
 	for _, child := range content.Blocks {
 		if child.Type != "check" {
@@ -549,6 +575,58 @@ func parseStep(block *hcl.Block) (model.StepDefinition, []model.Diagnostic) {
 		diags = append(diags, ds...)
 	}
 	return step, diags
+}
+
+// Resolve references after discovery so a test can reuse a step in any file.
+// The expanded step is a separate execution in the calling test.
+func resolveStepReferences(definition *model.ProjectDefinition) []model.Diagnostic {
+	var diags []model.Diagnostic
+	original := make(map[string]model.TestDefinition, len(definition.Tests))
+	for name, test := range definition.Tests {
+		original[name] = test
+	}
+	for name, test := range definition.Tests {
+		for index, step := range test.Steps {
+			if step.Ref == "" {
+				continue
+			}
+			parts := strings.SplitN(step.Ref, ".", 2)
+			sourceTest, exists := original[parts[0]]
+			if !exists {
+				diags = append(diags, diagnostic.Error(diagnostic.CodeReference, fmt.Sprintf("test %q does not exist", parts[0]), stepRange(step), "reference a declared test"))
+				continue
+			}
+			found := false
+			for _, source := range sourceTest.Steps {
+				if source.Name != parts[1] {
+					continue
+				}
+				found = true
+				if source.Ref != "" {
+					diags = append(diags, diagnostic.Error(diagnostic.CodeReference, "ref must point to a concrete step", stepRange(step), "reference a step with a trigger"))
+					break
+				}
+				for param := range step.Params {
+					if _, ok := source.ParamDefaults[param]; !ok {
+						diags = append(diags, diagnostic.Error(diagnostic.CodeReference, fmt.Sprintf("parameter %q is not declared on %s", param, step.Ref), stepRange(step), "use a declared parameter"))
+					}
+				}
+				source.Name, source.Ref, source.Params, source.Range = step.Name, step.Ref, step.Params, step.Range
+				test.Steps[index] = source
+				break
+			}
+			if !found {
+				diags = append(diags, diagnostic.Error(diagnostic.CodeReference, fmt.Sprintf("step %q does not exist in test %q", parts[1], parts[0]), stepRange(step), "reference a declared step"))
+			}
+		}
+		definition.Tests[name] = test
+	}
+	return diags
+}
+
+func stepRange(step model.StepDefinition) hcl.Range {
+	r := step.Range
+	return hcl.Range{Filename: r.File, Start: hcl.Pos{Line: r.StartLine, Column: r.StartColumn}, End: hcl.Pos{Line: r.EndLine, Column: r.EndColumn}}
 }
 
 func parseTrigger(block *hcl.Block) (model.TriggerDefinition, []model.Diagnostic) {
@@ -898,35 +976,49 @@ func validateReferences(definition *model.ProjectDefinition) []model.Diagnostic 
 	for _, test := range definition.Tests {
 		seen := map[string]model.StepDefinition{}
 		for _, step := range test.Steps {
-			for _, expression := range append([]hcl.Expression{step.HTTP.Method, step.HTTP.URL, step.HTTP.Body}, mapExpressions(step.HTTP.Headers)...) {
+			if step.Ref != "" && step.Trigger.Kind == "" {
+				continue
+			}
+			for name, expression := range step.ParamDefaults {
+				if _, overridden := step.Params[name]; !overridden {
+					diags = append(diags, validateExpression(expression, definition.Variables, nil, "var")...)
+				}
+			}
+			for _, expression := range step.Params {
 				diags = append(diags, validateExpression(expression, definition.Variables, seen, "var", "steps")...)
 			}
+			for _, expression := range append([]hcl.Expression{step.HTTP.Method, step.HTTP.URL, step.HTTP.Body}, mapExpressions(step.HTTP.Headers)...) {
+				diags = append(diags, validateExpression(expression, definition.Variables, seen, "var", "steps", "params")...)
+			}
 			for _, expression := range mapExpressions(step.Trigger.Attributes) {
-				diags = append(diags, validateExpression(expression, definition.Variables, seen, "var", "steps")...)
+				diags = append(diags, validateExpression(expression, definition.Variables, seen, "var", "steps", "params")...)
 			}
 			if step.Trigger.Executor != nil {
 				for _, expression := range mapExpressions(step.Trigger.Executor.Attributes) {
-					diags = append(diags, validateExpression(expression, definition.Variables, seen, "var", "steps")...)
+					diags = append(diags, validateExpression(expression, definition.Variables, seen, "var", "steps", "params")...)
 				}
 			}
 			for _, expression := range mapExpressions(step.Outputs) {
-				diags = append(diags, validateExpression(expression, definition.Variables, seen, "response", "var", "steps")...)
+				diags = append(diags, validateExpression(expression, definition.Variables, seen, "response", "var", "steps", "params")...)
 			}
 			for _, check := range step.Checks {
 				for _, expression := range mapExpressions(check.Response) {
-					diags = append(diags, validateExpression(expression, definition.Variables, seen, "response", "var", "steps")...)
+					diags = append(diags, validateExpression(expression, definition.Variables, seen, "response", "var", "steps", "params")...)
 				}
 				if check.Spans != nil {
 					for _, expression := range append([]hcl.Expression{check.Spans.Matching}, mapExpressions(check.Spans.Assertions)...) {
-						diags = append(diags, validateExpression(expression, definition.Variables, seen, "span", "resource", "response", "var", "steps")...)
+						diags = append(diags, validateExpression(expression, definition.Variables, seen, "span", "resource", "response", "var", "steps", "params")...)
 					}
 				}
 				if check.Metrics != nil {
-					diags = append(diags, validateExpression(check.Metrics.Query, definition.Variables, seen, "var", "steps")...)
+					diags = append(diags, validateExpression(check.Metrics.Query, definition.Variables, seen, "var", "steps", "params")...)
 					for _, expression := range mapExpressions(check.Metrics.Assertions) {
-						diags = append(diags, validateExpression(expression, definition.Variables, seen, "metric", "response", "var", "steps")...)
+						diags = append(diags, validateExpression(expression, definition.Variables, seen, "metric", "response", "var", "steps", "params")...)
 					}
 				}
+			}
+			for _, expression := range stepBodyExpressions(step) {
+				diags = append(diags, validateParamReference(expression, step.ParamDefaults)...)
 			}
 			seen[step.Name] = step
 		}
@@ -946,6 +1038,52 @@ func validateReferences(definition *model.ProjectDefinition) []model.Diagnostic 
 			if expression != nil {
 				diags = append(diags, validateExpression(expression, definition.Variables, nil, "var")...)
 			}
+		}
+	}
+	return diags
+}
+
+func stepBodyExpressions(step model.StepDefinition) []hcl.Expression {
+	expressions := append([]hcl.Expression{step.HTTP.Method, step.HTTP.URL, step.HTTP.Body}, mapExpressions(step.HTTP.Headers)...)
+	expressions = append(expressions, mapExpressions(step.Trigger.Attributes)...)
+	if step.Trigger.Executor != nil {
+		expressions = append(expressions, mapExpressions(step.Trigger.Executor.Attributes)...)
+	}
+	expressions = append(expressions, mapExpressions(step.Outputs)...)
+	for _, check := range step.Checks {
+		expressions = append(expressions, mapExpressions(check.Response)...)
+		if check.Spans != nil {
+			expressions = append(expressions, check.Spans.Matching)
+			expressions = append(expressions, mapExpressions(check.Spans.Assertions)...)
+		}
+		if check.Metrics != nil {
+			expressions = append(expressions, check.Metrics.Query)
+			expressions = append(expressions, mapExpressions(check.Metrics.Assertions)...)
+		}
+	}
+	return expressions
+}
+
+func validateParamReference(expression hcl.Expression, declared map[string]hcl.Expression) []model.Diagnostic {
+	if expression == nil {
+		return nil
+	}
+	var diags []model.Diagnostic
+	for _, traversal := range expression.Variables() {
+		if traversal.RootName() != "params" {
+			continue
+		}
+		if len(traversal) < 2 {
+			diags = append(diags, diagnostic.Error(diagnostic.CodeReference, "params must be followed by a parameter name", traversal.SourceRange(), "use params.NAME"))
+			continue
+		}
+		name, ok := traversal[1].(hcl.TraverseAttr)
+		if !ok {
+			diags = append(diags, diagnostic.Error(diagnostic.CodeReference, "parameter reference must use params.NAME", traversal.SourceRange(), "use a declared parameter"))
+			continue
+		}
+		if _, exists := declared[name.Name]; !exists {
+			diags = append(diags, diagnostic.Error(diagnostic.CodeReference, fmt.Sprintf("parameter %q is not declared", name.Name), traversal.SourceRange(), "declare the parameter in step.params"))
 		}
 	}
 	return diags

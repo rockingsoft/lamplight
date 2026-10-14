@@ -166,20 +166,27 @@ func MetricValue(metric model.MetricPoint) cty.Value {
 	})
 }
 
-func ResponseContext(response model.Response, variables map[string]model.SensitiveValue, steps cty.Value) *hcl.EvalContext {
-	return context(map[string]cty.Value{"response": ResponseValue(response), "var": Variables(variables), "steps": normalizeSteps(steps)})
+func ResponseContext(response model.Response, variables map[string]model.SensitiveValue, steps cty.Value, params ...cty.Value) *hcl.EvalContext {
+	return context(map[string]cty.Value{"response": ResponseValue(response), "var": Variables(variables), "steps": normalizeSteps(steps), "params": normalizeParams(params)})
 }
 
-func OutputContext(response model.Response, variables map[string]model.SensitiveValue, steps cty.Value) *hcl.EvalContext {
-	return ResponseContext(response, variables, steps)
+func OutputContext(response model.Response, variables map[string]model.SensitiveValue, steps cty.Value, params ...cty.Value) *hcl.EvalContext {
+	return ResponseContext(response, variables, steps, params...)
 }
 
-func SpanContext(span model.Span, response model.Response, variables map[string]model.SensitiveValue, steps cty.Value) *hcl.EvalContext {
-	return context(map[string]cty.Value{"span": SpanValue(span), "resource": ResourceValue(span.Resource), "response": ResponseValue(response), "var": Variables(variables), "steps": normalizeSteps(steps)})
+func SpanContext(span model.Span, response model.Response, variables map[string]model.SensitiveValue, steps cty.Value, params ...cty.Value) *hcl.EvalContext {
+	return context(map[string]cty.Value{"span": SpanValue(span), "resource": ResourceValue(span.Resource), "response": ResponseValue(response), "var": Variables(variables), "steps": normalizeSteps(steps), "params": normalizeParams(params)})
 }
 
-func MetricContext(metric model.MetricPoint, response model.Response, variables map[string]model.SensitiveValue, steps cty.Value) *hcl.EvalContext {
-	return context(map[string]cty.Value{"metric": MetricValue(metric), "response": ResponseValue(response), "var": Variables(variables), "steps": normalizeSteps(steps)})
+func MetricContext(metric model.MetricPoint, response model.Response, variables map[string]model.SensitiveValue, steps cty.Value, params ...cty.Value) *hcl.EvalContext {
+	return context(map[string]cty.Value{"metric": MetricValue(metric), "response": ResponseValue(response), "var": Variables(variables), "steps": normalizeSteps(steps), "params": normalizeParams(params)})
+}
+
+func normalizeParams(params []cty.Value) cty.Value {
+	if len(params) == 0 || params[0] == cty.NilVal {
+		return cty.EmptyObjectVal
+	}
+	return params[0]
 }
 
 func context(values map[string]cty.Value) *hcl.EvalContext {

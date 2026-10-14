@@ -466,7 +466,9 @@ Properties:
 | `step` | yes | one or more blocks | — | Executed in source order. Step names must be unique in the test. |
 | `outputs` | no | expression map | `{}` | Reserved test-level output expressions. They are parsed and validated but are not currently emitted in `RunResult`. Prefer step outputs for active workflows. |
 
-Tests do not call one another and are not grouped into suites. Selected tests
+Tests do not call one another and are not grouped into suites. A step can reuse
+the definition of a concrete step in another test; this runs a fresh step in
+the calling test. Selected tests
 are sorted by name and executed sequentially.
 
 ## 6. Steps
@@ -490,10 +492,57 @@ step "create_order" {
 }
 ```
 
+To reuse a step, declare its parameters on the original step and reference it
+from another test:
+
+```hcl
+test "auth" {
+  step "login" {
+    params = { email = var.EMAIL }
+
+    http_request {
+      method = "POST"
+      url    = "${var.BASE_URL}/login"
+      body   = jsonencode({ email = params.email })
+    }
+
+    outputs = { token = response.json.token }
+  }
+}
+
+test "checkout" {
+  step "authenticate" {
+    ref    = auth.steps.login
+    params = { email = var.CHECKOUT_EMAIL }
+  }
+
+  step "order" {
+    http_request {
+      method = "GET"
+      url    = "${var.BASE_URL}/orders"
+      headers = {
+        Authorization = "Bearer ${steps.authenticate.outputs.token}"
+      }
+    }
+  }
+}
+```
+
+`ref` uses the static form `TEST.steps.STEP`. The referenced step must declare
+one trigger; references to another `ref` step are rejected. The referencing
+step may contain only `ref` and `params`. Every override must name a parameter
+declared by the original step. The original `params` expressions provide
+defaults when that step runs directly or an override is omitted. Defaults may
+use `var`; overrides may use `var` and earlier `steps` in the calling test.
+Parameter values are evaluated before the trigger, and `params.NAME` is
+available in the trigger, outputs, and checks. Each invocation has its own
+result, trace, checks, and outputs under its local step name.
+
 Rules:
 
 - The label must be a valid HCL identifier and unique in its test.
-- A step contains exactly one `http_request` block.
+- A concrete step contains exactly one trigger block. A referenced step uses
+  `ref` in place of a trigger.
 - Steps execute in source order within each test. Independent tests can run concurrently.
 - A step may reference outputs only from earlier steps in the same test.
 - Checks always apply to the response and trace produced by their containing
@@ -519,10 +568,10 @@ Properties:
 
 | Property | Required | Type | Expression context | Description |
 | --- | --- | --- | --- | --- |
-| `method` | yes | string expression | `var`, `steps` | HTTP method. Empty strings are rejected. |
-| `url` | yes | string expression | `var`, `steps` | Absolute `http` or `https` URL. |
-| `headers` | no | map of string expressions | `var`, `steps` | Request headers. Header names are handled case-insensitively by Go's HTTP stack. |
-| `body` | no | string expression | `var`, `steps` | Request body. Use `jsonencode` for objects and collections. |
+| `method` | yes | string expression | `var`, `steps`, `params` | HTTP method. Empty strings are rejected. |
+| `url` | yes | string expression | `var`, `steps`, `params` | Absolute `http` or `https` URL. |
+| `headers` | no | map of string expressions | `var`, `steps`, `params` | Request headers. Header names are handled case-insensitively by Go's HTTP stack. |
+| `body` | no | string expression | `var`, `steps`, `params` | Request body. Use `jsonencode` for objects and collections. |
 
 Before sending, Lamplight removes user-provided `traceparent` and `tracestate`
 headers case-insensitively. If a datasource is configured, it injects the
@@ -835,12 +884,14 @@ Only the roots listed for a context are available.
 | --- | --- |
 | datasource endpoint, headers, bearer token | `var` |
 | metrics endpoint, headers, bearer token | `var` |
-| `metrics.query` | `var`, `steps` |
-| `http_request` properties | `var`, `steps` |
-| step `outputs` | `response`, `var`, `steps` |
-| check `response` | `response`, `var`, `steps` |
-| `spans.matching`, `spans.assertions` | `span`, `resource`, `response`, `var`, `steps` |
-| `metrics.assertions` | `metric`, `response`, `var`, `steps` |
+| step parameter defaults | `var` |
+| step parameter overrides | `var`, `steps` |
+| `metrics.query` | `var`, `steps`, `params` |
+| `http_request` properties | `var`, `steps`, `params` |
+| step `outputs` | `response`, `var`, `steps`, `params` |
+| check `response` | `response`, `var`, `steps`, `params` |
+| `spans.matching`, `spans.assertions` | `span`, `resource`, `response`, `var`, `steps`, `params` |
+| `metrics.assertions` | `metric`, `response`, `var`, `steps`, `params` |
 | test `outputs` | `var`, `steps` |
 
 ### 10.1 `var`

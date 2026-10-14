@@ -859,6 +859,13 @@ func collectExpressions(def *model.ProjectDefinition, tests []model.TestDefiniti
 			out = append(out, e)
 		}
 		for _, s := range t.Steps {
+			for name, fallback := range s.ParamDefaults {
+				if override, exists := s.Params[name]; exists {
+					out = append(out, override)
+				} else {
+					out = append(out, fallback)
+				}
+			}
 			out = append(out, s.HTTP.Method, s.HTTP.URL, s.HTTP.Body)
 			for _, e := range s.HTTP.Headers {
 				out = append(out, e)
