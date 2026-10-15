@@ -7,7 +7,6 @@ import (
 	"os/exec"
 	"runtime"
 	"strings"
-	"time"
 
 	"lamplight/internal/model"
 )
@@ -28,7 +27,7 @@ func (o OBI) StartLocal(ctx context.Context, definition model.InstrumentationDef
 	if command == nil {
 		command = exec.CommandContext
 	}
-	name := fmt.Sprintf("lamplight-obi-%d", time.Now().UnixNano())
+	name := "lamplight-obi"
 	args := []string{"run", "-d", "--name", name, "--label", "io.lamplight.managed=true", "--network=host", "--pid=host", "--privileged", "-v", "/sys/fs/cgroup:/sys/fs/cgroup:ro", "-v", "/sys/kernel/security:/sys/kernel/security:ro", "-e", "OTEL_EBPF_OPEN_PORT=" + joinPorts(definition.OpenPorts), "-e", "OTEL_EXPORTER_OTLP_ENDPOINT=" + endpoint, "-e", "OTEL_EBPF_BPF_CONTEXT_PROPAGATION=" + definition.ContextPropagation, "-e", "OTEL_EBPF_METRICS_FEATURES=application", "-e", "OTEL_EBPF_METRICS_INTERVAL=500ms", definition.Image}
 	if out, err := command(ctx, "docker", args...).CombinedOutput(); err != nil {
 		return nil, fmt.Errorf("start local OBI instrumentation: %w: %s", err, strings.TrimSpace(string(out)))
