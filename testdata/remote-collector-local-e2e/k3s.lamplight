@@ -1,0 +1,28 @@
+project {
+  base_dir = "../testdata/remote-collector-local-e2e"
+}
+
+variable "POKESHOP_API_URL" {}
+
+target "local_collector_e2e" {
+  runtime   = "kubernetes"
+  execution = "local"
+
+  kubernetes {
+    context   = "k3d-pokeshop"
+    namespace = "pokeshop"
+  }
+
+  variables = { POKESHOP_API_URL = "http://127.0.0.1:8081" }
+}
+
+datasource "otlp" {
+  endpoint           = "http://127.0.0.1:4318"
+  observation_window = duration("30s")
+  polling_interval   = duration("500ms")
+}
+
+instrumentation "obi" {
+  open_ports          = [8081]
+  context_propagation = "all"
+}
