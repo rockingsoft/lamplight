@@ -16,6 +16,35 @@ import (
 	"lamplight/internal/model"
 )
 
+func TestCIRunStreamsResultsToStdout(t *testing.T) {
+	t.Setenv("CI", "true")
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte(`{"ok":true}`))
+	}))
+	defer server.Close()
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, ".lamplight"), []byte("project { base_dir = \"tests\" }\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Mkdir(filepath.Join(dir, "tests"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	definition := fmt.Sprintf("test \"one\" {\n  step \"request\" {\n    http_request {\n      method = \"GET\"\n      url = %q\n    }\n  }\n}\n", server.URL)
+	if err := os.WriteFile(filepath.Join(dir, "tests", "one.wick"), []byte(definition), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	var stdout, stderr bytes.Buffer
+	if code := Main(context.Background(), []string{"--verbose", "run", "-w", dir}, IO{Out: &stdout, Err: &stderr}); code != 0 {
+		t.Fatalf("code=%d stdout=%q stderr=%q", code, stdout.String(), stderr.String())
+	}
+	if !strings.Contains(stdout.String(), "Running 1 test") || !strings.Contains(stdout.String(), "✓ 1 one") {
+		t.Fatalf("CI result missing from stdout: %q", stdout.String())
+	}
+	if !strings.Contains(stderr.String(), "level=DEBUG") || strings.Contains(stderr.String(), "✓ 1 one") {
+		t.Fatalf("CI debug output must stay on stderr: %q", stderr.String())
+	}
+}
+
 func TestValidateListAndRun(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")

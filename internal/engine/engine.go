@@ -376,7 +376,7 @@ func (e *Engine) runStep(ctx context.Context, project *model.Project, testName s
 				for index, check := range progress.Checks {
 					checks[index] = ProgressCheck{Name: check.Name, MatchCount: check.MatchCount, Status: check.Status, Reason: check.Reason, Rule: check.Rule}
 				}
-				e.progress(ProgressEvent{Kind: ProgressTraceObserved, StepName: step.Name, Attempt: progress.Attempt, SpanCount: progress.SpanCount, Found: progress.Found, Complete: progress.Complete, RetryError: progress.RetryError, Checks: checks})
+				e.progress(ProgressEvent{Kind: ProgressTraceObserved, TestName: testName, StepName: step.Name, Attempt: progress.Attempt, SpanCount: progress.SpanCount, Found: progress.Found, Complete: progress.Complete, RetryError: progress.RetryError, Checks: checks})
 			}}, spanChecks)
 			traceResult <- tracePollingResult{result: polled, err: pollErr}
 		}()
