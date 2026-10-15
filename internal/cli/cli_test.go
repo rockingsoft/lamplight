@@ -45,6 +45,34 @@ func TestCIRunStreamsResultsToStdout(t *testing.T) {
 	}
 }
 
+func TestRemoteCollectorTargetRunsResponseOnlyTestLocally(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"ok":true}`))
+	}))
+	defer server.Close()
+	dir := t.TempDir()
+	if err := os.Mkdir(filepath.Join(dir, "tests"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	config := `project { base_dir = "tests" }
+target "collector" {
+  runtime = "docker_compose"
+  execution = "local"
+}`
+	if err := os.WriteFile(filepath.Join(dir, ".lamplight"), []byte(config), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	definition := fmt.Sprintf("test \"local\" {\n  step \"request\" {\n    http_request {\n      method = \"GET\"\n      url = %q\n    }\n    check \"status\" {\n      response = { ok = response.status_code == 200 }\n    }\n  }\n}\n", server.URL)
+	if err := os.WriteFile(filepath.Join(dir, "tests", "local.wick"), []byte(definition), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	var stdout, stderr bytes.Buffer
+	if code := Main(context.Background(), []string{"run", "-w", dir, "--target", "collector"}, IO{Out: &stdout, Err: &stderr}); code != 0 {
+		t.Fatalf("code=%d stdout=%q stderr=%q", code, stdout.String(), stderr.String())
+	}
+}
+
 func TestValidateListAndRun(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")

@@ -71,6 +71,7 @@ jobs:
           "$RUNNER_TEMP/lamplight" run \
             --working-dir testdata/k6-e2e \
             --json-file "$RUNNER_TEMP/k6-e2e-result.json"
+          cat "$RUNNER_TEMP/k6-e2e-result.json"
 
   e2e:
     name: E2E (${{ matrix.runtime }})
@@ -79,9 +80,11 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        runtime:
-          - compose
-          - k3s
+        include:
+          - runtime: compose
+            config: compose.lamplight
+          - runtime: k3s
+            config: k3s.lamplight
     steps:
       - name: Check out Lamplight
         uses: actions/checkout@v7
@@ -177,6 +180,16 @@ jobs:
           fi
           printf 'Remote request order verified: slow sent=%d, fast sent=%d, fast received=%d, slow received=%d\n' \
             "$slow_sent" "$fast_sent" "$fast_received" "$slow_received"
+
+      - name: Run local trigger with remote collector E2E
+        working-directory: pokeshop
+        env:
+          KUBECONFIG: ${{ github.workspace }}/pokeshop/.bin/kubeconfig-pokeshop.yaml
+        run: |
+          cp ../testdata/remote-collector-local-e2e/${{ matrix.config }} .lamplight-local-collector-e2e
+          lamplight run --config .lamplight-local-collector-e2e --target local_collector_e2e \
+            --json-file lamplight-local-collector-result.json
+          cat lamplight-local-collector-result.json
 
       - name: Clean up Pokeshop
         if: always()

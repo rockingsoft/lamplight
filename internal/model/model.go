@@ -226,6 +226,7 @@ type ProjectDefinition struct {
 type TargetDefinition struct {
 	Name       string
 	Runtime    string
+	Execution  string
 	Variables  map[string]hcl.Expression
 	Compose    DockerComposeTarget
 	Kubernetes KubernetesTarget
