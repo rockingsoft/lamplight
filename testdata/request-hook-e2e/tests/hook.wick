@@ -1,0 +1,23 @@
+variable "BASE_URL" {}
+variable "HOOK_VALUE" {}
+
+test "request hook" {
+  step "send" {
+    http_request {
+      method = "POST"
+      url    = "${var.BASE_URL}/hook"
+      body   = "original"
+    }
+
+    request_hook {
+      command = ["bash", "hooks/add-header.sh"]
+      env = {
+        HOOK_VALUE = var.HOOK_VALUE
+      }
+    }
+
+    check "modified" {
+      response = { status = response.status_code == 204 }
+    }
+  }
+}

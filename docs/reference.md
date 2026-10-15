@@ -550,6 +550,52 @@ Rules:
 - With a datasource configured, every executed step receives a distinct trace
   ID, including steps without span checks.
 
+### Request hooks
+
+An HTTP, GraphQL, gRPC, or Kafka step may include one `request_hook` block. It
+runs after Lamplight evaluates the request and before the trigger sends it:
+
+```hcl
+step "send" {
+  http_request {
+    method = "POST"
+    url    = "${var.BASE_URL}/orders"
+    body   = "original"
+  }
+
+  request_hook {
+    command = ["bash", "hooks/add-header.sh"]
+    env = {
+      HOOK_VALUE = var.HOOK_VALUE
+    }
+  }
+}
+```
+
+`command` is a nonempty list of strings evaluated with `var`, `steps`, and
+`params`; Lamplight executes it directly without an implicit shell. `env` is an
+optional map of string expressions in the same context. The command runs in
+`project.base_dir` in the Lamplight client process, including when a target
+executor sends the resulting request from Compose or Kubernetes. It inherits
+the client environment, with `env` entries overriding matching names. Declare
+secrets as sensitive variables and pass them through `env` only when needed.
+
+Lamplight writes exactly one JSON object to stdin. For HTTP it contains
+`method`, `url`, `headers`, and `body`. For GraphQL, gRPC, and Kafka it contains
+the evaluated attributes of that trigger as top-level fields, including
+`headers` or gRPC `metadata`. The command writes exactly one complete
+replacement request JSON object to stdout. It may write diagnostics to stderr;
+a nonzero exit, malformed JSON, invalid request, or timeout fails the step
+before the trigger runs. Stdout must contain no log lines. Input and output
+are limited to 10 MiB; the hook timeout is the configured HTTP client timeout,
+or 30 seconds by default. Hooks are unavailable on trace-attachment and
+script triggers because those steps have no single request to modify.
+
+Lamplight places its generated trace headers in the request before the hook so
+the hook can inspect the complete outbound request. The hook cannot change or
+remove `traceparent` or `tracestate`; Lamplight validates them and injects them
+again at the transport boundary. See the working [Bash E2E example](../testdata/request-hook-e2e/tests/hooks/add-header.sh).
+
 ## 7. HTTP requests
 
 ```hcl

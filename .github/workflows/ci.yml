@@ -140,6 +140,9 @@ jobs:
       - name: Run reusable step E2E
         run: python3 testdata/reusable-steps-e2e/run.py "$RUNNER_TEMP/lamplight-bin/lamplight"
 
+      - name: Run Bash request hook E2E
+        run: python3 testdata/request-hook-e2e/run.py "$RUNNER_TEMP/lamplight-bin/lamplight"
+
       - name: Run Lamplight E2E suite
         working-directory: pokeshop
         env:

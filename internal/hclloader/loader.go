@@ -514,7 +514,7 @@ func parseStep(block *hcl.Block) (model.StepDefinition, []model.Diagnostic) {
 	if !hclsyntax.ValidIdentifier(step.Name) {
 		diags = append(diags, diagnostic.Error(diagnostic.CodeSchema, fmt.Sprintf("step name %q must be a valid HCL identifier", step.Name), block.DefRange, "use a valid HCL identifier"))
 	}
-	triggerBlocks := []hcl.BlockHeaderSchema{{Type: "check", LabelNames: []string{"name"}}}
+	triggerBlocks := []hcl.BlockHeaderSchema{{Type: "check", LabelNames: []string{"name"}}, {Type: "request_hook"}}
 	for _, capability := range TriggerCapabilities() {
 		triggerBlocks = append(triggerBlocks, hcl.BlockHeaderSchema{Type: capability.Block})
 	}
@@ -547,7 +547,7 @@ func parseStep(block *hcl.Block) (model.StepDefinition, []model.Diagnostic) {
 	}
 	var triggers []*hcl.Block
 	for _, child := range content.Blocks {
-		if child.Type != "check" {
+		if child.Type != "check" && child.Type != "request_hook" {
 			triggers = append(triggers, child)
 		}
 	}
@@ -562,6 +562,26 @@ func parseStep(block *hcl.Block) (model.StepDefinition, []model.Diagnostic) {
 		trigger, ds := parseTrigger(triggers[0])
 		step.Trigger = trigger
 		diags = append(diags, ds...)
+	}
+	hooks := blocksOfType(content.Blocks, "request_hook")
+	if len(hooks) > 1 {
+		diags = append(diags, diagnostic.Error(diagnostic.CodeSchema, "step may contain at most one request_hook", block.DefRange, "keep one request_hook block"))
+	} else if len(hooks) == 1 {
+		if step.Trigger.Kind != model.TriggerHTTP && step.Trigger.Kind != model.TriggerGraphQL && step.Trigger.Kind != model.TriggerGRPC && step.Trigger.Kind != model.TriggerKafka {
+			diags = append(diags, diagnostic.Error(diagnostic.CodeSchema, "request_hook requires an HTTP, GraphQL, gRPC, or Kafka request trigger", hooks[0].DefRange, "attach the hook to a request trigger"))
+		}
+		body, hookDiags := hooks[0].Body.Content(&hcl.BodySchema{Attributes: []hcl.AttributeSchema{{Name: "command", Required: true}, {Name: "env"}}})
+		diags = append(diags, diagnostic.FromHCL(hookDiags, diagnostic.CodeSchema)...)
+		hook := &model.RequestHookDefinition{Env: map[string]hcl.Expression{}}
+		if attr := body.Attributes["command"]; attr != nil {
+			hook.Command = attr.Expr
+		}
+		if attr := body.Attributes["env"]; attr != nil {
+			values, ds := expressionMap(attr.Expr)
+			hook.Env = values
+			diags = append(diags, ds...)
+		}
+		step.RequestHook = hook
 	}
 	if attr, ok := content.Attributes["outputs"]; ok {
 		outputs, ds := expressionMap(attr.Expr)
@@ -993,6 +1013,12 @@ func validateReferences(definition *model.ProjectDefinition) []model.Diagnostic 
 			for _, expression := range mapExpressions(step.Trigger.Attributes) {
 				diags = append(diags, validateExpression(expression, definition.Variables, seen, "var", "steps", "params")...)
 			}
+			if step.RequestHook != nil {
+				diags = append(diags, validateExpression(step.RequestHook.Command, definition.Variables, seen, "var", "steps", "params")...)
+				for _, expression := range mapExpressions(step.RequestHook.Env) {
+					diags = append(diags, validateExpression(expression, definition.Variables, seen, "var", "steps", "params")...)
+				}
+			}
 			if step.Trigger.Executor != nil {
 				for _, expression := range mapExpressions(step.Trigger.Executor.Attributes) {
 					diags = append(diags, validateExpression(expression, definition.Variables, seen, "var", "steps", "params")...)
@@ -1046,6 +1072,10 @@ func validateReferences(definition *model.ProjectDefinition) []model.Diagnostic 
 func stepBodyExpressions(step model.StepDefinition) []hcl.Expression {
 	expressions := append([]hcl.Expression{step.HTTP.Method, step.HTTP.URL, step.HTTP.Body}, mapExpressions(step.HTTP.Headers)...)
 	expressions = append(expressions, mapExpressions(step.Trigger.Attributes)...)
+	if step.RequestHook != nil {
+		expressions = append(expressions, step.RequestHook.Command)
+		expressions = append(expressions, mapExpressions(step.RequestHook.Env)...)
+	}
 	if step.Trigger.Executor != nil {
 		expressions = append(expressions, mapExpressions(step.Trigger.Executor.Attributes)...)
 	}

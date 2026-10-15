@@ -232,6 +232,13 @@ func (e *Engine) runStep(ctx context.Context, project *model.Project, testName s
 			sr.Error = diagnostic("request_evaluation", evalErr.Error())
 			return finish(model.StatusError)
 		}
+		if step.RequestHook != nil {
+			req, evalErr = applyHTTPHook(ctx, step.RequestHook, project, stepsValue, paramsValue, req, trace)
+			if evalErr != nil {
+				sr.Error = diagnostic("request_hook", evalErr.Error())
+				return finish(model.StatusError)
+			}
+		}
 		sr.Request = &req
 		triggerStarted = time.Now()
 		e.progress(ProgressEvent{Kind: ProgressTriggerStarted, StepName: step.Name, Trigger: model.TriggerHTTP})
@@ -249,6 +256,13 @@ func (e *Engine) runStep(ctx context.Context, project *model.Project, testName s
 		if err := prepareTriggerRequest(&req, project.Definition); err != nil {
 			sr.Error = diagnostic("trigger_evaluation", err.Error())
 			return finish(model.StatusError)
+		}
+		if step.RequestHook != nil {
+			req, evalErr = applyTriggerHook(ctx, step.RequestHook, project, stepsValue, paramsValue, req, trace)
+			if evalErr != nil {
+				sr.Error = diagnostic("request_hook", evalErr.Error())
+				return finish(model.StatusError)
+			}
 		}
 		if id, ok := triggerTraceID(req); trace != nil && ok {
 			if len(id) != 32 || !validHex(id) {
