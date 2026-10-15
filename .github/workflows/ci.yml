@@ -140,9 +140,6 @@ jobs:
       - name: Run reusable step E2E
         run: python3 testdata/reusable-steps-e2e/run.py "$RUNNER_TEMP/lamplight-bin/lamplight"
 
-      - name: Run concurrent remote executor E2E
-        run: python3 testdata/remote-concurrency-e2e/run.py "$RUNNER_TEMP/lamplight-bin/lamplight"
-
       - name: Run Bash request hook E2E
         run: python3 testdata/request-hook-e2e/run.py "$RUNNER_TEMP/lamplight-bin/lamplight"
 
@@ -187,6 +184,12 @@ jobs:
               "web_zero_code"
             ] | sort)
           ' lamplight-result.json > /dev/null
+
+      - name: Run independent tests concurrently on the remote target
+        working-directory: pokeshop
+        env:
+          KUBECONFIG: ${{ github.workspace }}/pokeshop/.bin/kubeconfig-pokeshop.yaml
+        run: lamplight run --target ${{ matrix.runtime }} --workers 10 --tag grpc --tag web
 
       - name: Upload Lamplight result
         if: always()
