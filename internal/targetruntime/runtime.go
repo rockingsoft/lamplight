@@ -93,11 +93,11 @@ func (r Launcher) dockerCompose(ctx context.Context, command func(context.Contex
 			return err
 		}
 		obiName := name + "-obi"
-		defer func() { _ = command(context.WithoutCancel(ctx), "docker", "rm", "-f", obiName).Run() }()
 		obiArgs := []string{"run", "-d", "--name", obiName, "--label", "io.lamplight.managed=true", "--pid=host", "--privileged", "--network", networks[0], "-v", "/sys/fs/cgroup:/sys/fs/cgroup:ro", "-v", "/sys/kernel/security:/sys/kernel/security:ro", "-e", "OTEL_EBPF_OPEN_PORT=" + ports(instrumentation.OpenPorts), "-e", "OTEL_EXPORTER_OTLP_ENDPOINT=http://" + name + ":" + port, "-e", "OTEL_EBPF_BPF_CONTEXT_PROPAGATION=" + instrumentation.ContextPropagation, "-e", "OTEL_EBPF_METRICS_FEATURES=application", "-e", "OTEL_EBPF_METRICS_INTERVAL=500ms", instrumentation.Image}
 		if out, err := command(ctx, "docker", obiArgs...).CombinedOutput(); err != nil {
 			return fmt.Errorf("start OBI instrumentation: %w: %s", err, strings.TrimSpace(string(out)))
 		}
+		defer func() { _ = command(context.WithoutCancel(ctx), "docker", "rm", "-f", obiName).Run() }()
 		if err := waitDockerOBI(ctx, command, obiName, r.obiSettle()); err != nil {
 			return err
 		}
@@ -111,7 +111,7 @@ func (r Launcher) dockerCompose(ctx context.Context, command func(context.Contex
 }
 
 func (r Launcher) kubernetes(ctx context.Context, command func(context.Context, string, ...string) *exec.Cmd, target model.TargetDefinition, otlpEndpoint string, instrumentation *model.InstrumentationDefinition, input io.Reader, streams IO) error {
-	name := fmt.Sprintf("lamplight-run-%d", time.Now().Unix())
+	name := "lamplight-run"
 	placement := []string{}
 	if target.Kubernetes.Context != "" {
 		placement = append(placement, "--context", target.Kubernetes.Context)
@@ -119,18 +119,25 @@ func (r Launcher) kubernetes(ctx context.Context, command func(context.Context, 
 	if target.Kubernetes.Namespace != "" {
 		placement = append(placement, "--namespace", target.Kubernetes.Namespace)
 	}
+	if err := ensureKubernetesNameAvailable(ctx, command, placement, "pod", name); err != nil {
+		return err
+	}
 	deleteArgs := append(append([]string{}, placement...), "delete", "pod", name, "--ignore-not-found=true", "--wait=false")
-	defer func() { _ = command(context.WithoutCancel(ctx), "kubectl", deleteArgs...).Run() }()
 	if instrumentation != nil {
 		port, err := endpointPort(otlpEndpoint)
 		if err != nil {
 			return err
 		}
+		for _, kind := range []string{"service", "daemonset"} {
+			if err := ensureKubernetesNameAvailable(ctx, command, placement, kind, name+"-obi"); err != nil {
+				return err
+			}
+		}
 		resources := kubernetesOBIResources(name, target.Kubernetes.Namespace, port, instrumentation)
-		applyArgs := append(append([]string{}, placement...), "apply", "-f", "-")
-		apply := command(ctx, "kubectl", applyArgs...)
-		apply.Stdin = strings.NewReader(resources)
-		if out, err := apply.CombinedOutput(); err != nil {
+		createArgs := append(append([]string{}, placement...), "create", "-f", "-")
+		create := command(ctx, "kubectl", createArgs...)
+		create.Stdin = strings.NewReader(resources)
+		if out, err := create.CombinedOutput(); err != nil {
 			return fmt.Errorf("start OBI instrumentation: %w: %s", err, strings.TrimSpace(string(out)))
 		}
 		cleanupArgs := append(append([]string{}, placement...), "delete", "daemonset,service", name+"-obi", "--ignore-not-found=true", "--wait=false")
@@ -159,6 +166,19 @@ func (r Launcher) kubernetes(ctx context.Context, command func(context.Context, 
 	cmd.Stdin, cmd.Stdout, cmd.Stderr = input, streams.Out, streams.Err
 	if err := cmd.Run(); err != nil {
 		return commandError("run Lamplight pod", err)
+	}
+	_ = command(context.WithoutCancel(ctx), "kubectl", deleteArgs...).Run()
+	return nil
+}
+
+func ensureKubernetesNameAvailable(ctx context.Context, command func(context.Context, string, ...string) *exec.Cmd, placement []string, kind, name string) error {
+	args := append(append([]string{}, placement...), "get", kind, name, "--ignore-not-found=true", "-o", "name")
+	out, err := command(ctx, "kubectl", args...).CombinedOutput()
+	if err != nil {
+		return fmt.Errorf("check Kubernetes %s %s: %w: %s", kind, name, err, strings.TrimSpace(string(out)))
+	}
+	if strings.TrimSpace(string(out)) != "" {
+		return fmt.Errorf("kubernetes %s %s already exists", kind, name)
 	}
 	return nil
 }

@@ -57,7 +57,7 @@ func TestKubernetesUsesConfiguredPlacement(t *testing.T) {
 	}
 	commands, _ := os.ReadFile(log)
 	got := string(commands)
-	for _, want := range []string{"--context prod", "--namespace shop", "run lamplight-run-", "--image lamplight:test", "serviceAccountName", "lamplight executor", "delete pod lamplight-run-", "--ignore-not-found=true", "--wait=false"} {
+	for _, want := range []string{"--context prod", "--namespace shop", "get pod lamplight-run", "run lamplight-run --attach", "--image lamplight:test", "serviceAccountName", "lamplight executor", "delete pod lamplight-run", "--ignore-not-found=true", "--wait=false"} {
 		if !strings.Contains(got, want) {
 			t.Fatalf("command %q missing %q", got, want)
 		}
@@ -99,7 +99,7 @@ func TestKubernetesCreatesOBIDaemonSetAndService(t *testing.T) {
 	manifests := filepath.Join(dir, "manifests")
 	script := `#!/bin/sh
 echo "$@" >> "$FAKE_LOG"
-case "$*" in *"apply -f -"*) cat >> "$FAKE_MANIFESTS";; *) cat;; esac
+case "$*" in *"create -f -"*) cat >> "$FAKE_MANIFESTS";; *) cat;; esac
 `
 	writeExecutable(t, filepath.Join(dir, "kubectl"), script)
 	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
@@ -117,6 +117,53 @@ case "$*" in *"apply -f -"*) cat >> "$FAKE_MANIFESTS";; *) cat;; esac
 		if !strings.Contains(got, want) {
 			t.Fatalf("manifest %q missing %q", got, want)
 		}
+	}
+}
+
+func TestDockerComposeOBICollisionDoesNotRemoveExistingContainer(t *testing.T) {
+	dir := t.TempDir()
+	log := filepath.Join(dir, "log")
+	script := `#!/bin/sh
+echo "$@" >> "$FAKE_LOG"
+case "$1 $2" in
+  "compose ps") echo app-id ;;
+  "inspect --format") echo app_default ;;
+  "run -d") echo collision >&2; exit 1 ;;
+esac
+`
+	writeExecutable(t, filepath.Join(dir, "docker"), script)
+	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	t.Setenv("FAKE_LOG", log)
+	definition := &model.InstrumentationDefinition{Image: "obi:test", OpenPorts: []int{8080}}
+	err := (Launcher{}).Run(context.Background(), model.TargetDefinition{Runtime: "docker_compose"}, dir, "http://127.0.0.1:4318", definition, strings.NewReader(""), IO{Out: &bytes.Buffer{}, Err: &bytes.Buffer{}})
+	if err == nil || !strings.Contains(err.Error(), "collision") {
+		t.Fatalf("expected collision, got %v", err)
+	}
+	commands, _ := os.ReadFile(log)
+	if strings.Contains(string(commands), "rm -f lamplight-run-obi") {
+		t.Fatalf("removed existing OBI container: %s", commands)
+	}
+}
+
+func TestKubernetesCollisionDoesNotDeleteExistingPod(t *testing.T) {
+	dir := t.TempDir()
+	log := filepath.Join(dir, "log")
+	script := `#!/bin/sh
+echo "$@" >> "$FAKE_LOG"
+case "$*" in
+  *"get pod lamplight-run"*) echo pod/lamplight-run ;;
+esac
+`
+	writeExecutable(t, filepath.Join(dir, "kubectl"), script)
+	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	t.Setenv("FAKE_LOG", log)
+	err := (Launcher{}).Run(context.Background(), model.TargetDefinition{Runtime: "kubernetes"}, dir, "", nil, strings.NewReader(""), IO{Out: &bytes.Buffer{}, Err: &bytes.Buffer{}})
+	if err == nil || !strings.Contains(err.Error(), "already exists") {
+		t.Fatalf("expected collision, got %v", err)
+	}
+	commands, _ := os.ReadFile(log)
+	if strings.Contains(string(commands), "delete pod") || strings.Contains(string(commands), "run lamplight-run") {
+		t.Fatalf("changed existing pod: %s", commands)
 	}
 }
 
