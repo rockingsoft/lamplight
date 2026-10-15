@@ -7,7 +7,7 @@ export const options = {
 };
 
 export default function () {
-  check(__ENV.LAMPLIGHT_K6_SMOKE, {
+  check(__ENV.LAMPLIGHT_K6_E2E, {
     "Lamplight forwards the trigger environment": (value) => value === "ok",
   });
 }
