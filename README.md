@@ -155,7 +155,8 @@ for runtime requirements and Kubernetes permissions.
 
 Lamplight prints live trigger, remote Cloud Run shard, trace-polling, and metric-polling progress. A run continues after
 a failed test by default so it can report the complete result; use
-`--fail-fast` when an early exit is more useful.
+`--fail-fast` when an early exit is more useful. It keeps the configured worker
+count and cancels other running tests after the first failure.
 
 ### 3. Connect Lamplight to a coding agent with MCP
 

@@ -370,7 +370,7 @@ func TestRunContinuesByDefaultAndSupportsFailFastWithCleanJSON(t *testing.T) {
 		wantSecond model.Status
 	}{
 		{name: "continue", wantSecond: model.StatusPassed},
-		{name: "fail fast", flags: []string{"--fail-fast"}, wantSecond: model.StatusSkipped},
+		{name: "fail fast with one worker", flags: []string{"--fail-fast", "--workers", "1"}, wantSecond: model.StatusSkipped},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			var stdout, stderr bytes.Buffer
