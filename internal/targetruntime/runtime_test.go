@@ -33,7 +33,7 @@ esac
 		t.Fatal(err)
 	}
 	commands, _ := os.ReadFile(log)
-	for _, want := range []string{"compose ps -q", "inspect --format", "create -i", "--network shop_default", "lamplight:test executor", "start --attach --interactive"} {
+	for _, want := range []string{"compose ps -q", "inspect --format", "create -i --name lamplight-run --read-only", "--network shop_default", "lamplight:test executor", "start --attach --interactive lamplight-run", "rm -f lamplight-run"} {
 		if !strings.Contains(string(commands), want) {
 			t.Fatalf("commands %q missing %q", commands, want)
 		}
@@ -73,7 +73,7 @@ case "$1 $2" in
   "compose ps") echo app-id ;;
   "inspect --format") echo app_default ;;
   "start --attach") cat ;;
-  "logs lamplight-run-"*) echo "Launching p.Tracer" ;;
+  "logs lamplight-run-obi") echo "Launching p.Tracer" ;;
 esac
 `
 	writeExecutable(t, filepath.Join(dir, "docker"), script)
@@ -86,7 +86,7 @@ esac
 	}
 	commands, _ := os.ReadFile(log)
 	got := string(commands)
-	for _, want := range []string{"--pid=host --privileged", "OTEL_EBPF_OPEN_PORT=8080,9090", "OTEL_EBPF_METRICS_FEATURES=application", "OTEL_EBPF_METRICS_INTERVAL=500ms", "OTEL_EXPORTER_OTLP_ENDPOINT=http://lamplight-run-", "otel/ebpf-instrument:v0.11.0"} {
+	for _, want := range []string{"--pid=host --privileged", "OTEL_EBPF_OPEN_PORT=8080,9090", "OTEL_EBPF_METRICS_FEATURES=application", "OTEL_EBPF_METRICS_INTERVAL=500ms", "OTEL_EXPORTER_OTLP_ENDPOINT=http://lamplight-run:4318", "otel/ebpf-instrument:v0.11.0"} {
 		if !strings.Contains(got, want) {
 			t.Fatalf("commands %q missing %q", got, want)
 		}

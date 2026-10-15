@@ -76,7 +76,7 @@ func (r Launcher) dockerCompose(ctx context.Context, command func(context.Contex
 		networks = append(networks, network)
 	}
 	sort.Strings(networks)
-	name := fmt.Sprintf("lamplight-run-%d", time.Now().UnixNano())
+	name := "lamplight-run"
 	createArgs := []string{"create", "-i", "--name", name, "--read-only", "--tmpfs", "/tmp", "--label", "io.lamplight.managed=true", "--network", networks[0], buildinfo.ExecutorImage(), "executor"}
 	if out, err := command(ctx, "docker", createArgs...).CombinedOutput(); err != nil {
 		return fmt.Errorf("create Lamplight executor: %w: %s", err, strings.TrimSpace(string(out)))
