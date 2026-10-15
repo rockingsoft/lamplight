@@ -28,6 +28,7 @@ type checkCapability struct {
 type capabilitiesOutput struct {
 	Triggers        []hclloader.TriggerCapability `json:"triggers"`
 	StepReuse       stepReuseCapability           `json:"step_reuse"`
+	RequestHook     requestHookCapability         `json:"request_hook"`
 	Checks          checkCapability               `json:"checks"`
 	VariableTypes   []string                      `json:"variable_types"`
 	TargetRuntimes  []string                      `json:"target_runtimes"`
@@ -43,6 +44,15 @@ type stepReuseCapability struct {
 	OverrideContext []string `json:"override_context"`
 	BodyContext     []string `json:"body_context"`
 	Notes           []string `json:"notes"`
+}
+
+type requestHookCapability struct {
+	Block             string   `json:"block"`
+	SupportedTriggers []string `json:"supported_triggers"`
+	ExpressionContext []string `json:"expression_context"`
+	Input             string   `json:"input"`
+	Output            string   `json:"output"`
+	Example           string   `json:"example"`
 }
 
 func (s *service) capabilities(_ context.Context, _ *mcp.CallToolRequest, _ emptyInput) (*mcp.CallToolResult, capabilitiesOutput, error) {
@@ -65,6 +75,14 @@ func (s *service) capabilities(_ context.Context, _ *mcp.CallToolRequest, _ empt
 				"A reference executes a fresh step under its local name, with its own trace, checks, and outputs.",
 				"A referencing step contains only ref and optional params; references to another reference are unsupported.",
 			},
+		},
+		RequestHook: requestHookCapability{
+			Block:             "request_hook",
+			SupportedTriggers: []string{"http_request", "graphql_request", "grpc_request", "kafka_request"},
+			ExpressionContext: []string{"var", "steps", "params"},
+			Input:             "one complete evaluated request JSON object on stdin",
+			Output:            "one complete replacement request JSON object on stdout",
+			Example:           "request_hook {\n  command = [\"bash\", \"hooks/edit.sh\"]\n  env = { KEY = var.KEY }\n}",
 		},
 		Checks: checkCapability{
 			ResponseContext:       []string{"response.status_code", "response.headers", "response.body", "response.json", "var", "steps", "params"},
@@ -108,7 +126,7 @@ type referenceOutput struct {
 var referenceTopics = map[string]string{
 	"overview":    "A project has one .lamplight file and recursively discovered .wick files below project.base_dir. Tests contain ordered steps; a concrete step has one trigger, optional outputs, and zero or more named checks. A ref step reuses a concrete step definition.",
 	"variables":   "Declare variable blocks in .lamplight or discovered .wick files. Supported types are string, int, and duration. Mark credentials sensitive = true and supply them through LAMPLIGHT_VAR_NAME. Runtime precedence is --var, environment, selected target, then default.",
-	"steps":       "Steps execute in source order. A concrete step may declare params = { NAME = var.VALUE }; its trigger, outputs, and checks can use params.NAME. A caller declares a step with ref = TEST.steps.STEP and optional params overrides. ref executes a fresh step under the caller's local name, and later steps use steps.LOCAL.outputs.NAME. Defaults use var; overrides use var or earlier steps. A ref step cannot declare a trigger, checks, or outputs, and cannot reference another ref step.",
+	"steps":       "Steps execute in source order. A concrete step may declare params = { NAME = var.VALUE }; its trigger, outputs, and checks can use params.NAME. A request trigger may also declare request_hook { command = [\"bash\", \"hooks/edit.sh\"] env = { KEY = var.KEY } }; the hook reads a complete evaluated request JSON from stdin and writes one replacement request JSON to stdout. It runs in the client process before sending and cannot change Lamplight trace headers. A caller declares a step with ref = TEST.steps.STEP and optional params overrides. ref executes a fresh step under the caller's local name, and later steps use steps.LOCAL.outputs.NAME. Defaults use var; overrides use var or earlier steps. A ref step cannot declare a trigger, checks, or outputs, and cannot reference another ref step.",
 	"triggers":    "Call lamplight_get_capabilities for the authoritative trigger inventory, required and optional attributes, propagation mode, and a complete example for every supported trigger block.",
 	"checks":      "Response expressions use response, var, steps, and params. Span matching and assertions also use span and resource. Metric checks always select series with PromQL; assertions use metric, whose delta is the post-trigger query value minus the pre-trigger query value. Span and metric blocks each require exactly one of at_least, at_most, or exactly.",
 	"expressions": "Lamplight exposes a small pure HCL expression surface. Call lamplight_get_capabilities for the current function list. Attribute maps use bracket access for semantic keys, for example resource[\"service.name\"] and span.attributes[\"http.request.method\"]. Numeric and boolean telemetry values are not strings.",

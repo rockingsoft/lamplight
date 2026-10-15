@@ -873,6 +873,12 @@ func collectExpressions(def *model.ProjectDefinition, tests []model.TestDefiniti
 			for _, e := range s.Trigger.Attributes {
 				out = append(out, e)
 			}
+			if s.RequestHook != nil {
+				out = append(out, s.RequestHook.Command)
+				for _, e := range s.RequestHook.Env {
+					out = append(out, e)
+				}
+			}
 			if s.Trigger.Executor != nil {
 				for _, e := range s.Trigger.Executor.Attributes {
 					out = append(out, e)

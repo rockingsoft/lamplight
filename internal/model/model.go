@@ -189,9 +189,15 @@ type StepDefinition struct {
 	ParamDefaults map[string]hcl.Expression
 	HTTP          HTTPRequestDefinition
 	Trigger       TriggerDefinition
+	RequestHook   *RequestHookDefinition
 	Outputs       map[string]hcl.Expression
 	Checks        []CheckDefinition
 	Range         SourceRange
+}
+
+type RequestHookDefinition struct {
+	Command hcl.Expression
+	Env     map[string]hcl.Expression
 }
 
 type TestDefinition struct {
