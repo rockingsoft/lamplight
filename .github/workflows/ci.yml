@@ -92,7 +92,6 @@ jobs:
         uses: actions/checkout@v7
         with:
           repository: rockingsoft/pokeshop
-          ref: refs/pull/2/head
           path: pokeshop
 
       - name: Set up Go
