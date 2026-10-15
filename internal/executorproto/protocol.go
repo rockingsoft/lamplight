@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"lamplight/internal/datasource"
+	"lamplight/internal/debuglog"
 	"lamplight/internal/httpstep"
 	"lamplight/internal/model"
 	triggerexecutor "lamplight/internal/trigger"
@@ -157,6 +158,9 @@ func (c *Client) call(ctx context.Context, request Request) (Response, error) {
 	err := ctx.Err()
 	if err == nil {
 		err = c.encoder.Encode(request)
+		if err == nil && request.HTTP != nil {
+			debuglog.Debug(ctx, "executor request sent", "request_id", request.ID, "method", request.Method, "url", request.HTTP.URL)
+		}
 	}
 	c.writeMu.Unlock()
 	if err != nil {
@@ -175,6 +179,9 @@ func (c *Client) call(ctx context.Context, request Request) (Response, error) {
 	}
 	if received.err != nil {
 		return Response{}, received.err
+	}
+	if request.HTTP != nil {
+		debuglog.Debug(ctx, "executor response received", "request_id", request.ID, "method", request.Method, "url", request.HTTP.URL)
 	}
 	response := received.response
 	if response.Error != nil {

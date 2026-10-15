@@ -145,14 +145,45 @@ jobs:
         working-directory: pokeshop
         env:
           KUBECONFIG: ${{ github.workspace }}/pokeshop/.bin/kubeconfig-pokeshop.yaml
-        run: lamplight run --target ${{ matrix.runtime }} --workers 10 --json-file lamplight-result.json
+        run: |
+          set -euo pipefail
+          lamplight --verbose run --target ${{ matrix.runtime }} --workers 10 --json-file lamplight-result.json 2>lamplight-debug.log
+
+          slow_sent=0
+          fast_sent=0
+          fast_received=0
+          slow_received=0
+          line_number=0
+          while IFS= read -r line; do
+            line_number=$((line_number + 1))
+            if [[ $line == *'msg="executor request sent"'* && $line == *'/pokemon/slow'* ]]; then
+              slow_sent=$line_number
+            elif [[ $line == *'msg="executor request sent"'* && $line == *'/pokemon/healthcheck'* ]]; then
+              fast_sent=$line_number
+            elif [[ $line == *'msg="executor response received"'* && $line == *'/pokemon/healthcheck'* ]]; then
+              fast_received=$line_number
+            elif [[ $line == *'msg="executor response received"'* && $line == *'/pokemon/slow'* ]]; then
+              slow_received=$line_number
+            fi
+          done < lamplight-debug.log
+
+          if (( slow_sent == 0 || fast_sent == 0 || fast_received == 0 || slow_received == 0 ||
+                slow_sent >= fast_sent || fast_sent >= fast_received || fast_received >= slow_received )); then
+            printf 'Remote request order failed: slow sent=%d, fast sent=%d, fast received=%d, slow received=%d\n' \
+              "$slow_sent" "$fast_sent" "$fast_received" "$slow_received" >&2
+            exit 1
+          fi
+          printf 'Remote request order verified: slow sent=%d, fast sent=%d, fast received=%d, slow received=%d\n' \
+            "$slow_sent" "$fast_sent" "$fast_received" "$slow_received"
 
       - name: Upload Lamplight result
         if: always()
         uses: actions/upload-artifact@v7
         with:
           name: lamplight-result-${{ matrix.runtime }}
-          path: pokeshop/lamplight-result.json
+          path: |
+            pokeshop/lamplight-result.json
+            pokeshop/lamplight-debug.log
           if-no-files-found: warn
 
       - name: Clean up Pokeshop
