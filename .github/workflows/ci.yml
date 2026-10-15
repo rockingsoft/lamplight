@@ -92,7 +92,7 @@ jobs:
         uses: actions/checkout@v7
         with:
           repository: rockingsoft/pokeshop
-          ref: codex/remote-concurrency-fixture
+          ref: refs/pull/2/head
           path: pokeshop
 
       - name: Set up Go
