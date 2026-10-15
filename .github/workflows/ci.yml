@@ -71,6 +71,7 @@ jobs:
           "$RUNNER_TEMP/lamplight" run \
             --working-dir testdata/k6-e2e \
             --json-file "$RUNNER_TEMP/k6-e2e-result.json"
+          cat "$RUNNER_TEMP/k6-e2e-result.json"
 
   e2e:
     name: E2E (${{ matrix.runtime }})
