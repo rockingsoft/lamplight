@@ -147,7 +147,7 @@ jobs:
           KUBECONFIG: ${{ github.workspace }}/pokeshop/.bin/kubeconfig-pokeshop.yaml
         run: |
           set -euo pipefail
-          lamplight --verbose run --target ${{ matrix.runtime }} --workers 10 --json-file lamplight-result.json 2>lamplight-debug.log
+          lamplight --verbose run --target ${{ matrix.runtime }} --workers 10 2>lamplight-debug.log
 
           slow_sent=0
           fast_sent=0
@@ -175,16 +175,6 @@ jobs:
           fi
           printf 'Remote request order verified: slow sent=%d, fast sent=%d, fast received=%d, slow received=%d\n' \
             "$slow_sent" "$fast_sent" "$fast_received" "$slow_received"
-
-      - name: Upload Lamplight result
-        if: always()
-        uses: actions/upload-artifact@v7
-        with:
-          name: lamplight-result-${{ matrix.runtime }}
-          path: |
-            pokeshop/lamplight-result.json
-            pokeshop/lamplight-debug.log
-          if-no-files-found: warn
 
       - name: Clean up Pokeshop
         if: always()
