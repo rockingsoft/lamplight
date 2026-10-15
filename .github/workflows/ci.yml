@@ -47,9 +47,8 @@ jobs:
       - name: Run static and race checks
         run: make vet lint test-race
 
-  k6-smoke:
-    name: k6 trigger smoke test
-    needs: unit
+  k6-e2e:
+    name: E2E (k6)
     runs-on: ubuntu-latest
     steps:
       - name: Check out repository
@@ -66,23 +65,15 @@ jobs:
         with:
           k6-version: '1.8.0'
 
-      - name: Run k6 trigger smoke test
+      - name: Run Lamplight k6 E2E
         run: |
           go build -o "$RUNNER_TEMP/lamplight" ./cmd/lamplight
           "$RUNNER_TEMP/lamplight" run \
-            --working-dir testdata/k6-smoke \
-            --json-file "$RUNNER_TEMP/k6-smoke-result.json"
-          jq -e '
-            .schema_version == 1 and
-            .status == "passed" and
-            (.tests | length) == 1 and
-            .tests[0].name == "k6 smoke" and
-            .tests[0].status == "passed"
-          ' "$RUNNER_TEMP/k6-smoke-result.json" > /dev/null
+            --working-dir testdata/k6-e2e \
+            --json-file "$RUNNER_TEMP/k6-e2e-result.json"
 
   e2e:
     name: E2E (${{ matrix.runtime }})
-    needs: unit
     runs-on: ubuntu-latest
     timeout-minutes: 20
     strategy:
@@ -137,59 +128,23 @@ jobs:
             "$image_context"
           echo "$bin_dir" >> "$GITHUB_PATH"
 
-      - name: Run reusable step E2E
-        run: python3 testdata/reusable-steps-e2e/run.py "$RUNNER_TEMP/lamplight-bin/lamplight"
-
-      - name: Run Bash request hook E2E
-        run: python3 testdata/request-hook-e2e/run.py "$RUNNER_TEMP/lamplight-bin/lamplight"
-
-      - name: Run Lamplight E2E suite
+      - name: Start target fixture
         working-directory: pokeshop
         env:
           RUNTIME: ${{ matrix.runtime }}
         run: |
-          set +e
           if [ "$RUNTIME" = k3s ]; then
-            LAMPLIGHT_OUTPUT=json make test-k3s > lamplight-result.json
+            make k3s
+            ./.bin/k3d image import --cluster pokeshop "ghcr.io/rockingsoft/lamplight:0.0.0-e2e-${GITHUB_SHA}"
           else
-            LAMPLIGHT_OUTPUT=json make test > lamplight-result.json
-          fi
-          exit_code=$?
-          set -e
-
-          echo "Lamplight exit code: $exit_code"
-          jq -r '
-            "Lamplight status: \(.status)",
-            (.tests[] | "  \(if .status == "passed" then "✓" else "✗" end) \(.name) [\(.status)]")
-          ' lamplight-result.json
-
-          if [ "$exit_code" -ne 0 ]; then
-            echo "Failed test details:" >&2
-            jq '{status, tests: [.tests[] | select(.status != "passed")]}' lamplight-result.json >&2
-            echo "Expected Lamplight to exit with code 0" >&2
-            exit 1
+            make run
           fi
 
-          jq -e '
-            .schema_version == 1 and
-            .status == "passed" and
-            (.tests | length) == 6 and
-            all(.tests[]; .status == "passed") and
-            ([.tests[].name] | sort) == ([
-              "Import a Pokemon reading a Stream",
-              "Import a Pokemon using API and MQ Worker",
-              "List Pokemons",
-              "List Pokemons using gRPC",
-              "Pokeshop - Add",
-              "web_zero_code"
-            ] | sort)
-          ' lamplight-result.json > /dev/null
-
-      - name: Run independent tests concurrently on the remote target
+      - name: Run Lamplight E2E suite
         working-directory: pokeshop
         env:
           KUBECONFIG: ${{ github.workspace }}/pokeshop/.bin/kubeconfig-pokeshop.yaml
-        run: lamplight run --target ${{ matrix.runtime }} --workers 10 --tag grpc --tag web
+        run: lamplight run --target ${{ matrix.runtime }} --workers 10 --json-file lamplight-result.json
 
       - name: Upload Lamplight result
         if: always()

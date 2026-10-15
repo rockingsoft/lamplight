@@ -1,11 +1,11 @@
-test "k6 smoke" {
-  tags = ["smoke", "k6"]
+test "k6 E2E" {
+  tags = ["e2e", "k6"]
 
   step "load" {
     k6 {
-      script = "smoke.js"
+      script = "k6-e2e.js"
       env = {
-        LAMPLIGHT_K6_SMOKE = "ok"
+        LAMPLIGHT_K6_E2E = "ok"
       }
       arguments = {
         vus        = 1
