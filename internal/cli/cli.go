@@ -559,7 +559,11 @@ func run(ctx context.Context, args []string, streams IO) int {
 	}
 	var progressFunc engine.ProgressFunc
 	if *legacyOutput == "" || render.Format(*legacyOutput) == render.FormatPretty {
-		progressFunc = newParallelRunProgress(streams.Err, redactor).Report
+		if isCIEnvironment(os.Getenv) {
+			progressFunc = newCIRunProgress(streams.Out, redactor).Report
+		} else {
+			progressFunc = newParallelRunProgress(streams.Err, redactor).Report
+		}
 	}
 	var httpExecutor model.HTTPExecutor = httpstep.New(nil)
 	localTriggers := triggerexecutor.New(httpExecutor)

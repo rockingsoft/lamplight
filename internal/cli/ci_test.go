@@ -35,7 +35,7 @@ func TestCIRunProgressUsesStablePlaywrightStyleLines(t *testing.T) {
 	progress.Report(engine.ProgressEvent{Kind: engine.ProgressRunStarted, TestsTotal: 2})
 	progress.Report(engine.ProgressEvent{Kind: engine.ProgressTestStarted, TestName: "import"})
 	progress.Report(engine.ProgressEvent{Kind: engine.ProgressRemoteTrigger, RemotePhase: "running", CompletedShards: 1, TotalShards: 4, Elapsed: 30 * time.Second})
-	progress.Report(engine.ProgressEvent{Kind: engine.ProgressTraceObserved, Checks: []engine.ProgressCheck{
+	progress.Report(engine.ProgressEvent{Kind: engine.ProgressTraceObserved, TestName: "import", Checks: []engine.ProgressCheck{
 		{Name: "worker called", Status: model.StatusFailed, Reason: "count_not_satisfied", Rule: model.QuantityRule{Kind: "at_least", Value: 1}},
 	}})
 	progress.Report(engine.ProgressEvent{Kind: engine.ProgressTestCompleted, TestName: "import", Status: model.StatusFailed, DurationMS: 1_250})
@@ -50,6 +50,23 @@ func TestCIRunProgressUsesStablePlaywrightStyleLines(t *testing.T) {
 	}
 	if strings.Contains(text, "\x1b[") || strings.Contains(text, "attempt") {
 		t.Fatalf("CI progress must be ANSI-free and omit polling attempts: %q", text)
+	}
+}
+
+func TestCIRunProgressReportsEachCompletedTestImmediately(t *testing.T) {
+	var output bytes.Buffer
+	progress := newCIRunProgress(&output, result.NewRedactor())
+	progress.Report(engine.ProgressEvent{Kind: engine.ProgressRunStarted, TestsTotal: 2})
+	progress.Report(engine.ProgressEvent{Kind: engine.ProgressTestStarted, TestName: "first"})
+	progress.Report(engine.ProgressEvent{Kind: engine.ProgressTestStarted, TestName: "second"})
+	progress.Report(engine.ProgressEvent{Kind: engine.ProgressTraceObserved, TestName: "second", Checks: []engine.ProgressCheck{{Name: "second check", Status: model.StatusFailed}}})
+	progress.Report(engine.ProgressEvent{Kind: engine.ProgressTestCompleted, TestName: "first", Status: model.StatusPassed})
+	if got := output.String(); !strings.Contains(got, "✓ 1 first") || strings.Contains(got, "second check") {
+		t.Fatalf("first result was not streamed independently: %q", got)
+	}
+	progress.Report(engine.ProgressEvent{Kind: engine.ProgressTestCompleted, TestName: "second", Status: model.StatusFailed})
+	if got := output.String(); !strings.Contains(got, "✗ 2 second") || !strings.Contains(got, "second check") {
+		t.Fatalf("second result and failure were not streamed: %q", got)
 	}
 }
 
