@@ -126,6 +126,7 @@ target "compose" {
 
 target "cluster" {
   runtime = "kubernetes"
+  execution = "local"
 
   kubernetes {
     context         = "production"
@@ -139,6 +140,14 @@ target "cluster" {
   }
 }
 ```
+
+`execution = "local"` keeps HTTP and script triggers in the local CLI while
+the selected remote runtime hosts datasource operations and the embedded OTLP
+receiver. This lets a local test send requests to a locally reachable service
+and observe traces or metrics exported to a collector in Compose or Kubernetes.
+For remote runtimes, `execution` defaults to `"remote"`; the implicit local
+target uses local execution. The application must be able to reach the remote
+OTLP receiver, and the local CLI must be able to reach the application.
 
 `docker_compose` inspects the running Compose project, creates a read-only
 ephemeral Lamplight executor, and connects it to the networks used by the

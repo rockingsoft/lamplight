@@ -199,7 +199,7 @@ func parseTarget(block *hcl.Block) (model.TargetDefinition, []model.Diagnostic) 
 	}
 	target.Name = block.Labels[0]
 	content, hclDiags := block.Body.Content(&hcl.BodySchema{
-		Attributes: []hcl.AttributeSchema{{Name: "runtime", Required: true}, {Name: "variables"}},
+		Attributes: []hcl.AttributeSchema{{Name: "runtime", Required: true}, {Name: "execution"}, {Name: "variables"}},
 		Blocks:     []hcl.BlockHeaderSchema{{Type: "docker_compose"}, {Type: "kubernetes"}},
 	})
 	diags := diagnostic.FromHCL(hclDiags, diagnostic.CodeSchema)
@@ -213,6 +213,19 @@ func parseTarget(block *hcl.Block) (model.TargetDefinition, []model.Diagnostic) 
 	}
 	if target.Runtime != "local" && target.Runtime != "docker_compose" && target.Runtime != "kubernetes" {
 		diags = append(diags, diagnostic.Error(diagnostic.CodeSchema, fmt.Sprintf("unsupported target runtime %q", target.Runtime), block.DefRange, "use local, docker_compose, or kubernetes"))
+	}
+	if attr, ok := content.Attributes["execution"]; ok {
+		target.Execution, diags = appendLiteralString(target.Execution, diags, attr.Expr)
+		if target.Execution != "local" && target.Execution != "remote" {
+			diags = append(diags, diagnostic.Error(diagnostic.CodeSchema, "target.execution must be local or remote", attr.Expr.Range(), "use local or remote"))
+		}
+	} else if target.Runtime == "local" {
+		target.Execution = "local"
+	} else {
+		target.Execution = "remote"
+	}
+	if target.Runtime == "local" && target.Execution == "remote" {
+		diags = append(diags, diagnostic.Error(diagnostic.CodeSchema, "local target cannot use remote execution", block.DefRange, "use local execution"))
 	}
 	if attr, ok := content.Attributes["variables"]; ok {
 		values, ds := expressionMap(attr.Expr)

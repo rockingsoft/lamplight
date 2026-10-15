@@ -29,6 +29,7 @@ target "compose" {
 }
 target "cluster" {
   runtime = "kubernetes"
+  execution = "local"
   kubernetes {
     context = "prod"
     namespace = "shop"
@@ -51,6 +52,9 @@ target "cluster" {
 	}
 	if got := project.Targets["cluster"].Kubernetes; got.Context != "prod" || got.Namespace != "shop" || got.ServiceAccount != "runner" {
 		t.Fatalf("kubernetes target: %#v", got)
+	}
+	if project.Targets["compose"].Execution != "remote" || project.Targets["cluster"].Execution != "local" {
+		t.Fatalf("target execution modes: %#v", project.Targets)
 	}
 }
 

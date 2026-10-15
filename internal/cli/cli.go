@@ -57,7 +57,7 @@ func selectTarget(def *model.ProjectDefinition, requested string) (model.TargetD
 		name = def.DefaultTarget
 	}
 	if name == "" || name == "local" {
-		return model.TargetDefinition{Name: "local", Runtime: "local", Variables: map[string]hcl.Expression{}}, true
+		return model.TargetDefinition{Name: "local", Runtime: "local", Execution: "local", Variables: map[string]hcl.Expression{}}, true
 	}
 	target, ok := def.Targets[name]
 	return target, ok
@@ -468,8 +468,8 @@ func run(ctx context.Context, args []string, streams IO) int {
 		writeLine(streams.Err, "error:", err)
 		return 1
 	}
-	if target.Runtime != "local" && containsExecutableK6(tests) {
-		writeLine(streams.Err, "error: k6 script triggers currently require the local target")
+	if target.Execution != "local" && containsExecutableK6(tests) {
+		writeLine(streams.Err, "error: k6 script triggers currently require local execution")
 		return 1
 	}
 	debuglog.Debug(ctx, "selected tests", "count", len(tests), "name", name, "tags", strings.Join(tags, ","), "files", strings.Join(files, ","), "exclude", *exclude)
@@ -589,15 +589,17 @@ func run(ctx context.Context, args []string, streams IO) int {
 				return 1
 			}
 		}
-	} else {
+	} else if target.Execution != "local" || datasourceConfig != nil || def.Instrumentation != nil {
 		client, closeExecutor, err := startRemoteExecutor(ctx, target, filepath.Dir(def.ConfigPath), datasourceConfig, def.Instrumentation, streams.Err)
 		if err != nil {
 			writeLine(streams.Err, "error:", err)
 			return 1
 		}
 		closeRemote = closeExecutor
-		httpExecutor = client
-		triggers = executorproto.TriggerClient{Client: client}
+		if target.Execution != "local" {
+			httpExecutor = client
+			triggers = executorproto.TriggerClient{Client: client}
+		}
 		if datasourceConfig != nil {
 			runtimeProject.Datasource = client
 		}
