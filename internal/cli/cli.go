@@ -421,7 +421,7 @@ func run(ctx context.Context, args []string, streams IO) int {
 	jsonFile := fs.String("json-file", "", "write the final JSON result to a file")
 	textFile := fs.String("text-file", "", "write the final deterministic text result to a file")
 	keep := fs.Bool("keep-artifacts", false, "keep successful artifacts")
-	failFast := fs.Bool("fail-fast", false, "stop after the first failed or errored test")
+	failFast := fs.Bool("fail-fast", false, "stop remaining tests after the first failed or errored test")
 	workers := fs.Int("workers", 4, "maximum concurrent tests (default 4; 1 runs serially)")
 	artifactsDir := fs.String("artifacts-dir", "", "artifact parent directory")
 	targetName := fs.String("target", "", "execution target")

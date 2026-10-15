@@ -1124,8 +1124,8 @@ Options:
 | `--var NAME=VALUE` | Override a variable. May be repeated; duplicate names are rejected. |
 | `--json-file FILE` | Write the final versioned JSON result to `FILE`. |
 | `--text-file FILE` | Write the final deterministic ANSI-free text result to `FILE`. |
-| `--fail-fast` | Stop after the first failed or errored test and mark the remaining tests as skipped. |
-| `--workers N` | Run up to N independent tests concurrently (default 4; use 1 for serial execution). `--fail-fast` runs serially. Remote targets run serially. |
+| `--fail-fast` | After the first failed or errored test, cancel other running tests and mark unfinished tests as skipped. Works with `--workers N`. |
+| `--workers N` | Run up to N independent tests concurrently (default 4; use 1 for serial execution). Remote targets run serially. |
 | `--keep-artifacts` | Preserve artifacts after a successful run. |
 | `--artifacts-dir DIR` | Select the parent directory for run artifacts. |
 
@@ -1133,8 +1133,10 @@ With no selector, all tests run once. Selectors by test name, file, and tag are
 mutually exclusive. Repeated files or tags use OR semantics. `--exclude`
 requires a selector, verifies that it matched at least one test, and then runs
 the complement; a final empty selection is an error. By default, an errored or
-failed test does not prevent later tests from running. `--fail-fast` stops after
-the first non-passing test. A selector that matches nothing is an error.
+failed test does not prevent later tests from running. With `--fail-fast`, the
+first failed or errored test stops new tests from starting and cancels tests
+already running. Interrupted and unstarted tests are reported as skipped. A
+selector that matches nothing is an error.
 
 Execution progress is written to stderr as each datasource check, test, step,
 and trigger starts or completes. In an interactive terminal, in-flight triggers

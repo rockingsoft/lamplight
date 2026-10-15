@@ -7,6 +7,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/hashicorp/hcl/v2"
 	"lamplight/internal/model"
 )
 
@@ -15,6 +16,32 @@ type barrierHTTP struct {
 	release chan struct{}
 	mu      sync.Mutex
 	seen    map[string][]string
+}
+
+type failFastHTTP struct {
+	started       chan string
+	releaseFailed chan struct{}
+	peerCancelled chan struct{}
+}
+
+func (h *failFastHTTP) Execute(ctx context.Context, request model.HTTPRequest, _ model.HTTPClientConfig, _ *model.TestTraceContext) (model.Response, error) {
+	name := strings.TrimPrefix(request.URL, "http://example.test/")
+	h.started <- name
+	switch name {
+	case "first":
+		select {
+		case <-h.releaseFailed:
+			return model.Response{StatusCode: 500}, nil
+		case <-ctx.Done():
+			return model.Response{}, ctx.Err()
+		}
+	case "second":
+		<-ctx.Done()
+		close(h.peerCancelled)
+		return model.Response{}, ctx.Err()
+	default:
+		return model.Response{StatusCode: 200}, nil
+	}
 }
 
 func (h *barrierHTTP) Execute(ctx context.Context, request model.HTTPRequest, _ model.HTTPClientConfig, _ *model.TestTraceContext) (model.Response, error) {
@@ -70,5 +97,48 @@ func TestRunConcurrentTestsKeepStepsSequentialAndResultsOrdered(t *testing.T) {
 		if strings.Join(steps, ",") != "first,second" {
 			t.Fatalf("%s steps=%v", name, steps)
 		}
+	}
+}
+
+func TestRunConcurrentFailFastCancelsPeersWithoutReducingWorkers(t *testing.T) {
+	http := &failFastHTTP{started: make(chan string, 3), releaseFailed: make(chan struct{}), peerCancelled: make(chan struct{})}
+	project := &model.Project{Definition: &model.ProjectDefinition{}}
+	for _, name := range []string{"first", "second", "third"} {
+		step := model.StepDefinition{Name: "request", HTTP: model.HTTPRequestDefinition{Method: parseExpr(t, `"GET"`), URL: parseExpr(t, `"http://example.test/`+name+`"`)}}
+		if name == "first" {
+			step.Checks = []model.CheckDefinition{{Name: "status", Response: map[string]hcl.Expression{"ok": parseExpr(t, `response.status_code == 200`)}}}
+		}
+		project.Tests = append(project.Tests, model.TestDefinition{Name: name, Steps: []model.StepDefinition{step}})
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	done := make(chan model.RunResult, 1)
+	go func() { done <- (&Engine{HTTP: http, Workers: 2, FailFast: true}).Run(ctx, project) }()
+	seen := map[string]bool{}
+	for range 2 {
+		select {
+		case got := <-http.started:
+			if (got != "first" && got != "second") || seen[got] {
+				t.Fatalf("unexpected test started: %q", got)
+			}
+			seen[got] = true
+		case <-ctx.Done():
+			t.Fatal("two tests did not start concurrently")
+		}
+	}
+	close(http.releaseFailed)
+	select {
+	case <-http.peerCancelled:
+	case <-ctx.Done():
+		t.Fatal("running peer was not cancelled")
+	}
+	run := <-done
+	if run.Status != model.StatusFailed || len(run.Tests) != 3 || run.Tests[0].Status != model.StatusFailed || run.Tests[1].Status != model.StatusSkipped || run.Tests[2].Status != model.StatusSkipped {
+		t.Fatalf("run=%#v", run)
+	}
+	select {
+	case name := <-http.started:
+		t.Fatalf("test started after failure: %q", name)
+	default:
 	}
 }
