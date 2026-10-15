@@ -429,12 +429,6 @@ func run(ctx context.Context, args []string, streams IO) int {
 	if fs.Parse(normalizeRunArgs(args)) != nil {
 		return 1
 	}
-	workersExplicit := false
-	fs.Visit(func(flag *flag.Flag) {
-		if flag.Name == "workers" {
-			workersExplicit = true
-		}
-	})
 	if *workers < 1 {
 		writeLine(streams.Err, "error: --workers must be at least 1")
 		return 1
@@ -477,13 +471,6 @@ func run(ctx context.Context, args []string, streams IO) int {
 	if target.Runtime != "local" && containsExecutableK6(tests) {
 		writeLine(streams.Err, "error: k6 script triggers currently require the local target")
 		return 1
-	}
-	if target.Runtime != "local" && *workers > 1 {
-		if workersExplicit {
-			writeLine(streams.Err, "error: concurrent tests require the local target")
-			return 1
-		}
-		*workers = 1
 	}
 	debuglog.Debug(ctx, "selected tests", "count", len(tests), "name", name, "tags", strings.Join(tags, ","), "files", strings.Join(files, ","), "exclude", *exclude)
 	expressions := collectExpressions(def, tests)

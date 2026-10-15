@@ -145,7 +145,10 @@ ephemeral Lamplight executor, and connects it to the networks used by the
 selected services. The engine, test evaluation, polling, artifacts, and output
 remain in the local CLI. Only evaluated trigger requests and datasource
 operations cross the versioned stdio protocol. Lamplight does not send project
-files, edit Compose files, or publish ports. `project` is an optional Compose
+files, edit Compose files, or publish ports. Requests and responses are matched
+by ID, so independent tests can use the same executor concurrently. The
+executor limits active operations to 32 and queues additional requests.
+`project` is an optional Compose
 project name and `services` optionally restricts network discovery; by default
 all running services in the current project are used.
 
@@ -1125,7 +1128,7 @@ Options:
 | `--json-file FILE` | Write the final versioned JSON result to `FILE`. |
 | `--text-file FILE` | Write the final deterministic ANSI-free text result to `FILE`. |
 | `--fail-fast` | After the first failed or errored test, cancel other running tests and mark unfinished tests as skipped. Works with `--workers N`. |
-| `--workers N` | Run up to N independent tests concurrently (default 4; use 1 for serial execution). Remote targets run serially. |
+| `--workers N` | Run up to N independent tests concurrently on local, Compose, or Kubernetes targets (default 4; use 1 for serial execution). |
 | `--keep-artifacts` | Preserve artifacts after a successful run. |
 | `--artifacts-dir DIR` | Select the parent directory for run artifacts. |
 
