@@ -147,7 +147,10 @@ jobs:
           KUBECONFIG: ${{ github.workspace }}/pokeshop/.bin/kubeconfig-pokeshop.yaml
         run: |
           set -euo pipefail
-          lamplight --verbose run --target ${{ matrix.runtime }} --workers 10 2>lamplight-debug.log
+          test_status=0
+          lamplight --verbose run --target ${{ matrix.runtime }} --workers 10 --json-file lamplight-result.json 2>lamplight-debug.log || test_status=$?
+          cat lamplight-result.json
+          (( test_status == 0 )) || exit "$test_status"
 
           slow_sent=0
           fast_sent=0
