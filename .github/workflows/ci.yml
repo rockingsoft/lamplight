@@ -178,6 +178,57 @@ jobs:
           printf 'Remote request order verified: slow sent=%d, fast sent=%d, fast received=%d, slow received=%d\n' \
             "$slow_sent" "$fast_sent" "$fast_received" "$slow_received"
 
+      - name: Run local trigger with remote collector E2E
+        working-directory: pokeshop
+        env:
+          RUNTIME: ${{ matrix.runtime }}
+          KUBECONFIG: ${{ github.workspace }}/pokeshop/.bin/kubeconfig-pokeshop.yaml
+        run: |
+          set -euo pipefail
+          config=.lamplight-local-collector-e2e
+          test_file=lamplight/local-collector-e2e.wick
+          trap 'rm -f "$config" "$test_file"' EXIT
+          cp .lamplight "$config"
+          cp ../testdata/remote-collector-local-e2e/local-collector.wick "$test_file"
+          if [[ "$RUNTIME" == compose ]]; then
+            cat >> "$config" <<'HCL'
+          target "local_collector_e2e" {
+            runtime = "docker_compose"
+            execution = "local"
+            docker_compose {
+              project = "pokeshop"
+              services = ["api"]
+            }
+            variables = { POKESHOP_API_URL = "http://127.0.0.1:8081" }
+          }
+          HCL
+          else
+            cat >> "$config" <<'HCL'
+          target "local_collector_e2e" {
+            runtime = "kubernetes"
+            execution = "local"
+            kubernetes {
+              context = "k3d-pokeshop"
+              namespace = "pokeshop"
+            }
+            variables = { POKESHOP_API_URL = "http://127.0.0.1:8081" }
+          }
+          HCL
+          fi
+          test_status=0
+          lamplight run --config "$config" --target local_collector_e2e \
+            --file local-collector-e2e.wick --json-file lamplight-local-collector-result.json || test_status=$?
+          cat lamplight-local-collector-result.json
+          (( test_status == 0 )) || exit "$test_status"
+          jq -e '
+            .status == "passed" and
+            (.tests | length) == 1 and
+            .tests[0].name == "local trigger remote collector" and
+            .tests[0].status == "passed" and
+            (.tests[0].steps[0].checks | length) == 2 and
+            all(.tests[0].steps[0].checks[]; .status == "passed")
+          ' lamplight-local-collector-result.json > /dev/null
+
       - name: Clean up Pokeshop
         if: always()
         working-directory: pokeshop

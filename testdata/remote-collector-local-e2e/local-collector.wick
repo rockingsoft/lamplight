@@ -1,0 +1,21 @@
+test "local trigger remote collector" {
+  step "request" {
+    http_request {
+      method = "GET"
+      url    = "${var.POKESHOP_API_URL}/pokemon?take=20&skip=0"
+    }
+
+    check "local response" {
+      response = {
+        "status is 200" = response.status_code == 200
+      }
+    }
+
+    check "remote collector received the trace" {
+      spans {
+        matching = span.attributes["http.request.method"] == "GET"
+        at_least = 1
+      }
+    }
+  }
+}
